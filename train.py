@@ -3,7 +3,7 @@ import torch
 import math
 
 
-def train(model, iterator, optimizer, criterion, clip, fields):
+def train(args, model, iterator, optimizer, criterion, fields):
     model.train()
 
     total_loss = 0
@@ -18,8 +18,8 @@ def train(model, iterator, optimizer, criterion, clip, fields):
         total_tokens += ntokens
         optimizer.zero_grad()
 
-        # output = model(src, src_len.cpu().long(), tgt[:, :-1], teacher_forcing_ratio=1)
-        output = model.forward_parallel(src, src_len.cpu().long(), tgt[:, :-1])
+        output = model(src, src_len.cpu().long(), tgt[:, :-1], teacher_forcing_ratio=args.teaching_rate)
+        #  output = model.forward_parallel(src, src_len.cpu().long(), tgt[:, :-1])
         # output = [batch size, tgt len - 1, vocab_size]
         vocab_size = len(fields['tgt'].vocab)
         output = output.reshape(-1, vocab_size)
@@ -30,8 +30,8 @@ def train(model, iterator, optimizer, criterion, clip, fields):
         loss = criterion(output.float(), tgt)
 
         loss.backward()
-        if clip:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+        if args.clip:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
         optimizer.step()
 
@@ -44,7 +44,7 @@ def train(model, iterator, optimizer, criterion, clip, fields):
             }
 
 
-def evaluate(model, iterator, criterion, fields, bleu=None):
+def evaluate(args, model, iterator, criterion, fields, bleu=None):
     model.eval()
 
     total_loss = 0

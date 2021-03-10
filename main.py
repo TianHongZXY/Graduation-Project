@@ -43,6 +43,9 @@ def main():
                         help='how many subprocesses to use for data loading. 0 means that the data will be loaded in the main process.')
     parser.add_argument('--l2', default=0, type=float, help='l2 regularization')
     parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
+    parser.add_argument('--teaching_rate', default=0.5, type=float, help='teaching_rate is probability to use teacher forcing')
+    parser.add_argument('--pretrained_embed_file', default=None, type=str, help='torchtext vector name')
+
     args, unparsed = parser.parse_known_args()
     if args.save:
         tz_sh = tz.gettz('Asia/Shanghai')
@@ -71,6 +74,14 @@ def main():
 
     src_embedding = Embedding(len(SRC.vocab), EMB_DIM, padding_idx=SRC_PAD_IDX)
     tgt_embedding = Embedding(len(TGT.vocab), EMB_DIM, padding_idx=TGT_PAD_IDX)
+    if args.pretrained_embed_file:
+        # 权重在词汇表vocab的vectors属性中
+        src_pretrained_vectors = SRC.vocab.vectors
+        tgt_pretrained_vectors = TGT.vocab.vectors
+        # 指定嵌入矩阵的初始权重
+        src_embedding.lut.weight.data.copy_(src_pretrained_vectors)
+        tgt_embedding.lut.weight.data.copy_(tgt_pretrained_vectors)
+        print("pretrained vectors loaded successfully!")
     enc = RNNBaseEncoder('GRU', EMB_DIM, HID_DIM, N_LAYERS, bidirectional=False, dropout=ENC_DROPOUT)
     dec = RNNBaseDecoder('GRU', EMB_DIM, HID_DIM, N_LAYERS, dropout=DEC_DROPOUT)
     generator = Generator(HID_DIM, len(TGT.vocab))
@@ -88,9 +99,9 @@ def main():
     for epoch in range(N_EPOCHS):
         start_time = time.time()
 
-        train_metrics = train(model, dataset['train_iterator'], optimizer, criterion, CLIP, fields=dataset['fields'])
-        valid_metrics = evaluate(model, dataset['valid_iterator'], criterion, bleu=bleu, fields=dataset['fields'])
-        test_metrics = evaluate(model, dataset['test_iterator'], criterion, bleu=bleu, fields=dataset['fields'])
+        train_metrics = train(args, model, dataset['train_iterator'], optimizer, criterion, fields=dataset['fields'])
+        valid_metrics = evaluate(args, model, dataset['valid_iterator'], criterion, bleu=bleu, fields=dataset['fields'])
+        test_metrics = evaluate(args, model, dataset['test_iterator'], criterion, bleu=bleu, fields=dataset['fields'])
         end_time = time.time()
         global_step += len(dataset['train_iterator'])
         epoch_mins, epoch_secs = epoch_time(start_time, end_time)

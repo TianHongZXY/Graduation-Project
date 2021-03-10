@@ -45,7 +45,7 @@ def build_field_vocab(vocab_file, field, min_freq=1, vectors=None):
     return field
 
 
-def seq2seq_dataset(args, is_train=True, tokenizer=None, pretrained_embed_file=None):
+def seq2seq_dataset(args, is_train=True, tokenizer=None):
     MIN_FREQ = args.min_freq
     BATCH_SIZE = args.bs
     MAX_LEN = args.maxlen
@@ -71,10 +71,11 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None, pretrained_embed_file=N
                                          )
     train, valid, test = dataset
     vectors = None
-    if pretrained_embed_file is not None:
+    if args.pretrained_embed_file is not None:
+        logger.info(f"Using pretrained vectors {args.pretrained_embed_file}")
         if not os.path.exists('.vector_cache'):
             os.mkdir('.vector_cache')
-            vectors = Vectors(name=pretrained_embed_file)
+            vectors = Vectors(name=args.pretrained_embed_file)
     if args.vocab_file is None:
         logger.info("No pre-defined vocab given, building new vocab now...")
         # train disc的时候保存vocab文件，到了train gen时加载，保证两者的embedding共用一个vocab
