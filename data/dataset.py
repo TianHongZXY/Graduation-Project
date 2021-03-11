@@ -56,10 +56,14 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
         print("Tokenizer is not given! Using spacy tokenizer as default.")
         tokenizer = tokenize_en
     SRC = data.Field(tokenize=tokenizer, pad_token=pad_token,
-                     include_lengths=True, batch_first=True)
+                     include_lengths=True, 
+                     #  batch_first=True,
+                     )
     TGT = data.Field(tokenize=tokenizer, init_token=sos_token,
                      eos_token=eos_token, pad_token=pad_token,
-                     include_lengths=True, batch_first=True)
+                     include_lengths=True, 
+                     #  batch_first=True,
+                     )
     # fields = [('src', SRC), ('tgt', TGT), ('cue', SRC)]
     fields = [('src', SRC), ('tgt', TGT)]
     filter_pred = None

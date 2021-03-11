@@ -9,42 +9,39 @@ def train(args, model, iterator, optimizer, criterion, fields):
     total_loss = 0
     total_tokens = 0
     tgt_padding_idx = fields['tgt'].vocab.stoi[fields['tgt'].pad_token]
-    # i = 0
     for batch in tqdm(iterator):
         src, src_len = batch.src
-        # tgt = [batch size, tgt len]
+        # tgt = [tgt len, batch size]
         tgt, tgt_len = batch.tgt
-        ntokens = (tgt[:, 1:] != tgt_padding_idx).data.sum()
+        ntokens = (tgt[1:] != tgt_padding_idx).data.sum()
         total_tokens += ntokens
         optimizer.zero_grad()
 
-        output = model(src, src_len.cpu().long(), tgt[:, :-1], teacher_forcing_ratio=args.teaching_rate)
-        #  output = model.forward_parallel(src, src_len.cpu().long(), tgt[:, :-1])
-        # output = [batch size, tgt len - 1, vocab_size]
+        # output = [tgt len, batch size, vocab_size]
+        output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=args.teaching_rate)
+        #  output = model.forward_parallel(src, src_len.cpu().long(), tgt)
         vocab_size = len(fields['tgt'].vocab)
-        output = output.reshape(-1, vocab_size)
-        tgt = tgt[:, 1:].reshape(-1)
+        # output = [(tgt len - 1) * batch size, vocab_size]
+        # tgt = [(tgt len - 1) * batch size]
+        output = output[1:].reshape(-1, vocab_size)
+        tgt = tgt[1:].reshape(-1)
 
-        # tgt = [batch size * (tgt len - 1),]
-        # output = [batch size * (tgt len - 1) , vocab_size]
-        loss = criterion(output.float(), tgt)
-
+        loss = criterion(output, tgt)
+        loss /= ntokens
         loss.backward()
         if args.clip:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
         optimizer.step()
 
-        total_loss += loss.item()
-        # i += 1
-        # if i == 10:
-        #     break
+        total_loss += loss.item() * ntokens
+        #  break
     return {'epoch_loss': total_loss / total_tokens,
             'PPL': math.exp(total_loss / total_tokens),
             }
 
 
-def evaluate(args, model, iterator, criterion, fields, bleu=None):
+def evaluate(args, model, iterator, criterion, fields, bleu=None, dist=None):
     model.eval()
 
     total_loss = 0
@@ -54,30 +51,36 @@ def evaluate(args, model, iterator, criterion, fields, bleu=None):
     with torch.no_grad():
         for batch in tqdm(iterator):
             src, src_len = batch.src
-            # tgt = [batch size, tgt len]
+            # tgt = [tgt len, batch size]
             tgt, tgt_len = batch.tgt
-            ntokens = (tgt[:, 1:] != tgt_padding_idx).data.sum()
+            ntokens = (tgt[1:] != tgt_padding_idx).data.sum()
             total_tokens += ntokens
             vocab_size = len(fields['tgt'].vocab)
-            # output = [batch size, tgt len - 1, vocab_size]
-            output = model(src, src_len.cpu().long(), tgt[:, :-1], 0)  # turn off teacher forcing
-
+            # output = [tgt len, batch size, vocab_size]
+            output = model(src, src_len.cpu().long(), tgt, 0)  # turn off teacher forcing
+            # pred = [batch size, tgt len - 1]
+            pred = output[1:].argmax(-1).T
             if bleu:
-                gold = tgt[:, 1:]
-                pred = output.argmax(-1)
+                gold = tgt[1:].T
                 bleu(predictions=pred, gold_targets=gold)
+            if dist:
+                dist.forward([hyps for hyps in pred.detach().cpu().numpy()])
 
-            # output = [batch size * (tgt len - 1) , vocab_size]
-            output = output.reshape(-1, vocab_size)
-            # tgt = [batch size * (tgt len - 1)]
-            tgt = tgt[:, 1:].reshape(-1)
+            # output = [(tgt len - 1) * batch size, vocab_size]
+            # tgt = [(tgt len - 1) * batch size]
+            output = output[1:].reshape(-1, vocab_size)
+            tgt = tgt[1:].reshape(-1)
 
-            loss = criterion(output.float(), tgt)
+            loss = criterion(output, tgt)
             total_loss += loss.item()
+            #  break
     metrics = {'epoch_loss': total_loss / total_tokens,
                'PPL': math.exp(total_loss / total_tokens),
                }
     if bleu:
         metrics['bleu'] = bleu.get_metric(reset=True)['BLEU']
+    if dist:
+        dist_n = dist.get_metric(reset=True)
+        metrics.update(dist_n)
 
     return metrics

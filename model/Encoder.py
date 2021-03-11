@@ -28,16 +28,17 @@ class RNNBaseEncoder(nn.Module):
                                                num_layers=num_layers,
                                                bidirectional=bidirectional,
                                                dropout=dropout,
-                                               batch_first=True)
+                                               #  batch_first=True,
+                                               )
 
-    def forward(self, x,  # [batch, seq, dim]
+    def forward(self, x,  # [seq, batch,dim]
                 length):  # [batch, ]
-        x = pack_padded_sequence(x, length, batch_first=True, enforce_sorted=False)
+        x = pack_padded_sequence(x, length, batch_first=False, enforce_sorted=False)
 
-        # output: [batch, seq,  directions * dim] 每个时间步的隐状态
+        # output: [seq, batch,  directions * dim] 每个时间步的隐状态
         # final_state = [layers * directions, batch, dim] 每一层的最后一个状态，不管batch_first是true或false，batch都在中间
         output, final_state = self.rnn_cell(x)
-        output = pad_packed_sequence(output, batch_first=True)[0]  # 返回output和length，不需要length了
+        output = pad_packed_sequence(output, batch_first=False)[0]  # 返回output和length，不需要length了
 
         if self.bidirectional:
             if self.cell_type == 'GRU':
@@ -50,7 +51,7 @@ class RNNBaseEncoder(nn.Module):
                 final_state_c = torch.cat([final_state_c[0::2, :, :], final_state_c[1::2, :, :]], 2)  # [layers, batch, 2 * dim = output_size]
                 final_state = (final_state_h, final_state_c)
 
-        # output = [batch, seq, output_size]
+        # output = [seq, batch, output_size]
         # final_state = [layers, batch, directions * dim] = [layers, batch, output_size]
         return output, final_state
 

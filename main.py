@@ -45,6 +45,9 @@ def main():
     parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
     parser.add_argument('--teaching_rate', default=0.5, type=float, help='teaching_rate is probability to use teacher forcing')
     parser.add_argument('--pretrained_embed_file', default=None, type=str, help='torchtext vector name')
+    parser.add_argument('--warmup', default=0, type=int, help='warmup steps, 0 means not using NoamOpt')
+    parser.add_argument('--cell_type', default='LSTM', type=str, help='cell type of encoder/decoder, LSTM or GRU')
+
 
     args, unparsed = parser.parse_known_args()
     if args.save:
@@ -72,8 +75,8 @@ def main():
     N_EPOCHS = args.n_epochs
     CLIP = args.clip
 
-    src_embedding = Embedding(len(SRC.vocab), EMB_DIM, padding_idx=SRC_PAD_IDX)
-    tgt_embedding = Embedding(len(TGT.vocab), EMB_DIM, padding_idx=TGT_PAD_IDX)
+    src_embedding = Embedding(len(SRC.vocab), EMB_DIM, padding_idx=SRC_PAD_IDX, dropout=ENC_DROPOUT)
+    tgt_embedding = Embedding(len(TGT.vocab), EMB_DIM, padding_idx=TGT_PAD_IDX, dropout=DEC_DROPOUT)
     if args.pretrained_embed_file:
         # 权重在词汇表vocab的vectors属性中
         src_pretrained_vectors = SRC.vocab.vectors
@@ -82,41 +85,59 @@ def main():
         src_embedding.lut.weight.data.copy_(src_pretrained_vectors)
         tgt_embedding.lut.weight.data.copy_(tgt_pretrained_vectors)
         print("pretrained vectors loaded successfully!")
-    enc = RNNBaseEncoder('GRU', EMB_DIM, HID_DIM, N_LAYERS, bidirectional=False, dropout=ENC_DROPOUT)
-    dec = RNNBaseDecoder('GRU', EMB_DIM, HID_DIM, N_LAYERS, dropout=DEC_DROPOUT)
+    enc = RNNBaseEncoder(args.cell_type, EMB_DIM, HID_DIM, N_LAYERS, bidirectional=False, dropout=ENC_DROPOUT)
+    dec = RNNBaseDecoder(args.cell_type, EMB_DIM, HID_DIM, N_LAYERS, dropout=DEC_DROPOUT)
     generator = Generator(HID_DIM, len(TGT.vocab))
     model = RNNBaseSeq2Seq(enc, dec, src_embedding, tgt_embedding, generator).to(device)
 
     print(f'The model has {count_parameters(model):,} trainable parameters')
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
-    optimizer = NoamOptimWrapper(args.hid_dim, 1, 4000, optimizer)
+    if args.warmup > 0:
+        optimizer = NoamOptimWrapper(args.hid_dim, 1, args.warmup, optimizer)
     criterion = nn.CrossEntropyLoss(ignore_index=TGT_PAD_IDX, reduction='sum')
 
+    best_epoch = 0
     best_valid_loss = float('inf')
+    best_bleu = 0
+    best_dist_1 = 0
+    best_dist_2 = 0
     global_step = 0
-    bleu = None # BLEU(exclude_indices={TGT_PAD_IDX, TGT.vocab.stoi[TGT.eos_token], TGT.vocab.stoi[TGT.init_token]})
+    bleu = BLEU(exclude_indices={TGT_PAD_IDX, TGT.vocab.stoi[TGT.eos_token], TGT.vocab.stoi[TGT.init_token]})
+    dist = Distinct(exclude_tokens={TGT_PAD_IDX, TGT.vocab.stoi[TGT.eos_token], TGT.vocab.stoi[TGT.init_token]})
 
     for epoch in range(N_EPOCHS):
         start_time = time.time()
 
         train_metrics = train(args, model, dataset['train_iterator'], optimizer, criterion, fields=dataset['fields'])
-        valid_metrics = evaluate(args, model, dataset['valid_iterator'], criterion, bleu=bleu, fields=dataset['fields'])
-        test_metrics = evaluate(args, model, dataset['test_iterator'], criterion, bleu=bleu, fields=dataset['fields'])
+        valid_metrics = evaluate(args, model, dataset['valid_iterator'], criterion, bleu=bleu, fields=dataset['fields'], dist=dist)
+        test_metrics = evaluate(args, model, dataset['test_iterator'], criterion, bleu=bleu, fields=dataset['fields'], dist=dist)
         end_time = time.time()
         global_step += len(dataset['train_iterator'])
         epoch_mins, epoch_secs = epoch_time(start_time, end_time)
-
-        if args.save and valid_metrics['epoch_loss'] < best_valid_loss:
-            best_valid_loss = valid_metrics['epoch_loss']
-            torch.save(model.state_dict(), os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
-            with open(os.path.join(save_dir, f'log_global_step-{global_step}.txt'), 'w') as log_file:
-                log_file.write(f'Global Step: {global_step}\n')
-                for metrics, mode in zip([train_metrics, valid_metrics, test_metrics], ['Train', 'Valid', 'Test']):
-                    write_metrics(metrics, log_file, mode=mode)
-
         print(f'Epoch: {epoch + 1:02} | Global step: {global_step} | Time: {epoch_mins}m {epoch_secs}s')
         for metrics, mode in zip([train_metrics, valid_metrics, test_metrics], ['Train', 'Valid', 'Test']):
             print_metrics(metrics, mode=mode)
+
+        # TODO 优化存储logfile,取消hard-code模式
+        if args.save:
+            best_valid_loss = valid_metrics['epoch_loss']  if valid_metrics['epoch_loss'] < best_valid_loss else best_valid_loss
+            best_epoch = epoch if valid_metrics['epoch_loss'] == best_valid_loss else best_epoch
+            best_bleu = valid_metrics['bleu'] if valid_metrics['bleu'] > best_bleu else best_bleu
+            best_dist_1 = valid_metrics['dist_1'] if valid_metrics['dist_1'] > best_dist_1 else best_dist_1
+            best_dist_2 = valid_metrics['dist_2'] if valid_metrics['dist_2'] > best_dist_2 else best_dist_2
+            torch.save(model.state_dict(), os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
+            with open(os.path.join(save_dir, f'log_epoch-{epoch+1}_global_step-{global_step}.txt'), 'w') as log_file:
+                valid_metrics['Best Epoch'] = best_epoch + 1
+                valid_metrics['Best Valid Loss'] = best_valid_loss
+                valid_metrics['Best PPL'] = math.exp(best_valid_loss)
+                valid_metrics['Best BLEU'] = best_bleu
+                valid_metrics['Best Dist-1'] = best_dist_1
+                valid_metrics['Best Dist-2'] = best_dist_2
+
+                for metric, performance in valid_metrics.items():
+                    log_file.write(f'{metric}: {performance}\n')
+                #  for metrics, mode in zip([train_metrics, valid_metrics, test_metrics], ['Train', 'Valid', 'Test']):
+                #      write_metrics(metrics, log_file, mode=mode)
 
 
 if __name__ == '__main__':

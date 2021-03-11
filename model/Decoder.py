@@ -20,13 +20,14 @@ class RNNBaseDecoder(nn.Module):
                                                hidden_size=output_size,
                                                num_layers=num_layers,
                                                dropout=dropout,
-                                               batch_first=True)
+                                               #  batch_first=True,
+                                               )
 
-    def forward(self, x,  # x = [batch, seq, dim] 或单步输入 [batch, 1, dim]
+    def forward(self, x,  # x = [seq, batch, dim] 或单步输入 [1, batch, dim]
                 state):  # state = [layers, batch, dim]
         # decoder不存在双向，所以directions永远是1，因此省略
-        # output: [batch, seq, dim] 每个时间步的输出
-        # final_state: [batch, layers, dim] 每一层的最终状态
+        # output: [seq, batch, dim] 每个时间步的输出
+        # final_state: [layers, batch, dim] 每一层的最终状态
         output, final_state = self.rnn_cell(x, state)
         return output, final_state
 
