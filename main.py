@@ -2,20 +2,21 @@ from model.Encoder import RNNBaseEncoder
 from model.Decoder import RNNBaseDecoder, Generator
 from model.EncoderDecoder import RNNBaseSeq2Seq
 from model.Embedding import Embedding
-from data.dataset import seq2seq_dataset
+from data.dataset import seq2seq_dataset, load_iwslt
 from train import train, evaluate
 import torch.optim as optim
 import time
 import math
 from tqdm import tqdm
 from allennlp.training.metrics import BLEU
-from optim.Optim import NoamOptimWrapper
+from optim.Optim import NoamOptimWrapper, AdamOptimizer
 from utils import *
 import argparse
 import os
 from datetime import datetime
 from dateutil import tz, zoneinfo
 import json
+from torch.utils.tensorboard import SummaryWriter
 
 
 def main():
@@ -47,22 +48,25 @@ def main():
     parser.add_argument('--pretrained_embed_file', default=None, type=str, help='torchtext vector name')
     parser.add_argument('--warmup', default=0, type=int, help='warmup steps, 0 means not using NoamOpt')
     parser.add_argument('--cell_type', default='LSTM', type=str, help='cell type of encoder/decoder, LSTM or GRU')
-
+    parser.add_argument('--comment', default='', type=str, help='comment, will be used as suffix of save directory')
 
     args, unparsed = parser.parse_known_args()
+    writer = None
     if args.save:
         tz_sh = tz.gettz('Asia/Shanghai')
-        save_dir = os.path.join(args.save_dir, 'run' + str(datetime.now(tz=tz_sh)).replace(":", "-").split(".")[0].replace(" ", '.'))
+        save_dir = os.path.join(args.save_dir, 'run' + str(datetime.now(tz=tz_sh)).replace(":", "-").split(".")[0].replace(" ", '.') + args.comment)
         args.save_dir = save_dir
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
         with open(os.path.join(save_dir, 'args.txt'), 'w') as f:
             json.dump(args.__dict__, f, indent=2)
+        writer = SummaryWriter(os.path.join(save_dir, 'summary'))
 
     device = torch.device(args.gpu if (torch.cuda.is_available() and args.gpu >= 0) else 'cpu')
     args.device = device
 
     dataset = seq2seq_dataset(args)
+    #  dataset = load_iwslt(args)
     SRC = dataset['fields']['src']
     TGT = dataset['fields']['tgt']
     EMB_DIM = args.emb_dim
@@ -91,7 +95,8 @@ def main():
     model = RNNBaseSeq2Seq(enc, dec, src_embedding, tgt_embedding, generator).to(device)
 
     print(f'The model has {count_parameters(model):,} trainable parameters')
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
+    optimizer = AdamOptimizer(model.parameters(), lr=args.lr, weight_decay=args.l2, max_grad_norm=args.clip)
+    #  optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
     if args.warmup > 0:
         optimizer = NoamOptimWrapper(args.hid_dim, 1, args.warmup, optimizer)
     criterion = nn.CrossEntropyLoss(ignore_index=TGT_PAD_IDX, reduction='sum')
@@ -108,7 +113,7 @@ def main():
     for epoch in range(N_EPOCHS):
         start_time = time.time()
 
-        train_metrics = train(args, model, dataset['train_iterator'], optimizer, criterion, fields=dataset['fields'])
+        train_metrics = train(args, model, dataset['train_iterator'], optimizer, criterion, fields=dataset['fields'], writer=writer)
         valid_metrics = evaluate(args, model, dataset['valid_iterator'], criterion, bleu=bleu, fields=dataset['fields'], dist=dist)
         test_metrics = evaluate(args, model, dataset['test_iterator'], criterion, bleu=bleu, fields=dataset['fields'], dist=dist)
         end_time = time.time()
@@ -120,6 +125,8 @@ def main():
 
         # TODO 优化存储logfile,取消hard-code模式
         if args.save:
+            write_metrics_to_writer(valid_metrics, writer, global_step, mode='Valid')
+            write_metrics_to_writer(test_metrics, writer, global_step, mode='Test')
             best_valid_loss = valid_metrics['epoch_loss']  if valid_metrics['epoch_loss'] < best_valid_loss else best_valid_loss
             best_epoch = epoch if valid_metrics['epoch_loss'] == best_valid_loss else best_epoch
             best_bleu = valid_metrics['bleu'] if valid_metrics['bleu'] > best_bleu else best_bleu

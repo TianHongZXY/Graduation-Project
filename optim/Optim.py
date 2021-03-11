@@ -3,17 +3,19 @@ import torch.optim as optim
 
 
 class Optimizer(object):
-    def __init__(self, params,
+    def __init__(self,
+                 params,
                  lr,
                  lr_decay=1.0,
                  weight_decay=0.0,
                  max_grad_norm=None):
-        self.params = [p for p in params if p.requires_grad]
+        self.parameters = params
         self.lr = lr
         self.lr_decay = lr_decay
         self.weight_decay = weight_decay
         self.max_grad_norm = max_grad_norm
         self.optimizer = None
+        self._step = 0
 
     def update_lr(self, epoch):
         self.lr = self.lr * self.lr_decay ** epoch
@@ -21,9 +23,10 @@ class Optimizer(object):
             param['lr'] = self.lr
 
     def step(self):
-        if self.max_grad_norm:
-            nn.utils.clip_grad_norm_(self.params, self.max_grad_norm)
+        if self.max_grad_norm and self.max_grad_norm > 0:
+            nn.utils.clip_grad_norm_(self.parameters, self.max_grad_norm)
         self.optimizer.step()
+        self._step += 1
 
     def zero_grad(self):
         self.optimizer.zero_grad()
@@ -31,17 +34,21 @@ class Optimizer(object):
     def rate(self):
         return self.lr
 
+    def get_global_step(self):
+        return self._step
+
 
 class AdamOptimizer(Optimizer):
     def __init__(self, params,
-                 lr,
+                 lr=1e-3,
                  lr_decay=1.0,
                  weight_decay=0.0,
                  max_grad_norm=None,
                  betas=(0.9, 0.999),
                  eps=1e-8):
         super(AdamOptimizer, self).__init__(params, lr, lr_decay, weight_decay, max_grad_norm)
-        self.optimizer = optim.Adam(self.params, lr=self.lr, weight_decay=self.weight_decay, betas=betas, eps=eps)
+        self.optimizer = optim.Adam(params, lr=self.lr, weight_decay=self.weight_decay, betas=betas, eps=eps)
+        self.param_groups = self.optimizer.param_groups
 
 
 class SGDOptimizer(Optimizer):
@@ -52,7 +59,8 @@ class SGDOptimizer(Optimizer):
                  max_grad_norm=None,
                  momentum=0):
         super(SGDOptimizer, self).__init__(params, lr, lr_decay, weight_decay, max_grad_norm)
-        self.optimizer = optim.SGD(self.params, lr=self.lr, weight_decay=self.weight_decay, momentum=momentum)
+        self.optimizer = optim.SGD(params, lr=self.lr, weight_decay=self.weight_decay, momentum=momentum)
+        self.param_groups = self.optimizer.param_groups
 
 
 class RMSpropOptimizer(Optimizer):
@@ -65,8 +73,9 @@ class RMSpropOptimizer(Optimizer):
                  eps=1e-8,
                  momentum=0):
         super(RMSpropOptimizer, self).__init__(params, lr, lr_decay, weight_decay, max_grad_norm)
-        self.optimizer = optim.RMSprop(self.params, lr=self.lr, weight_decay=self.weight_decay,
+        self.optimizer = optim.RMSprop(params, lr=self.lr, weight_decay=self.weight_decay,
                                        alpha=alpha, eps=eps, momentum=momentum)
+        self.param_groups = self.optimizer.param_groups
 
 
 class NoamOptimWrapper:
@@ -100,3 +109,7 @@ class NoamOptimWrapper:
 
     def zero_grad(self):
         self.optimizer.zero_grad()
+
+    def get_global_step(self):
+        return self._step
+

@@ -1,15 +1,17 @@
 from tqdm import tqdm
 import torch
 import math
+import time
 
 
-def train(args, model, iterator, optimizer, criterion, fields):
+def train(args, model, iterator, optimizer, criterion, fields, writer=None):
     model.train()
 
+    start = time.time()
     total_loss = 0
     total_tokens = 0
     tgt_padding_idx = fields['tgt'].vocab.stoi[fields['tgt'].pad_token]
-    for batch in tqdm(iterator):
+    for i, batch in enumerate(iterator):
         src, src_len = batch.src
         # tgt = [tgt len, batch size]
         tgt, tgt_len = batch.tgt
@@ -29,10 +31,16 @@ def train(args, model, iterator, optimizer, criterion, fields):
         loss = criterion(output, tgt)
         loss /= ntokens
         loss.backward()
-        if args.clip:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
         optimizer.step()
+        i += 1
+        if i % 50 == 0:
+            elapsed = time.time() - start
+            print("Global Step: %d\tEpoch Step: %d\tLoss: %f\tTokens per Sec: %f\tlr: %f" %
+                        (optimizer.get_global_step(), i, loss, total_tokens / elapsed, optimizer.rate()))
+        if writer:
+            writer.add_scalar('Train_Loss', loss.item(), optimizer.get_global_step())
+            writer.add_scalar('Train_PPL', math.exp(loss.item()), optimizer.get_global_step())
 
         total_loss += loss.item() * ntokens
         #  break

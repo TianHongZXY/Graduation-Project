@@ -1,5 +1,5 @@
 from torchtext.data import BucketIterator
-from torchtext import data
+from torchtext import data, datasets
 from torchtext.vocab import Vectors
 import logging
 import os
@@ -7,6 +7,7 @@ import re
 from collections import Counter, OrderedDict
 import logging
 import coloredlogs
+import jieba
 import spacy
 spacy_en = spacy.load('en')
 logger = logging.getLogger(__name__)
@@ -24,6 +25,14 @@ def whitespace_tokenize(text):
 def re_whitespace_tokenize(text):
     text = re.sub('[0-9’!"#$%&\'()*+,-./:;<=>?@，。?★、…【】《》？“”‘’！[\\]^_`{|}~]+', " ", text)
     return [tok for tok in text.split()]
+
+
+def jieba_tokenize(text):
+    return [token for token in jieba.cut(text)]
+
+
+def chinese_char_tokenize(text):
+    return list(text)
 
 
 def build_field_vocab(vocab_file, field, min_freq=1, vectors=None):
@@ -45,6 +54,59 @@ def build_field_vocab(vocab_file, field, min_freq=1, vectors=None):
     return field
 
 
+def load_iwslt(args):
+    # For data loading.
+    import spacy
+    spacy_de = spacy.load('de')
+    spacy_en = spacy.load('en')
+    BATCH_SIZE = args.bs
+    MIN_FREQ = args.min_freq
+    MAX_LEN = args.maxlen
+
+    def tokenize_de(text):
+        return [tok.text for tok in spacy_de.tokenizer(text)][::-1]
+
+    def tokenize_en(text):
+        return [tok.text for tok in spacy_en.tokenizer(text)]
+
+    BOS_WORD = '<s>'
+    EOS_WORD = '</s>'
+    BLANK_WORD = "<blank>"
+    SRC = data.Field(tokenize=tokenize_de, pad_token=BLANK_WORD,
+                     # batch_first=True,
+                     lower=True,
+                     include_lengths=True,
+                     )
+    TGT = data.Field(tokenize=tokenize_en, init_token=BOS_WORD,
+                     eos_token=EOS_WORD, pad_token=BLANK_WORD,
+                     # batch_first=True,
+                     lower=True,
+                     include_lengths=True,
+                     )
+
+    train, valid, test = datasets.Multi30k.splits(
+        exts=('.de', '.en'), fields=[('src', SRC), ('tgt', TGT)],
+        # filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and
+        #                       len(vars(x)['tgt']) <= MAX_LEN,
+    )
+
+    SRC.build_vocab(train, min_freq=MIN_FREQ)
+    TGT.build_vocab(train, min_freq=MIN_FREQ)
+    logger.info(f"SRC has {len(SRC.vocab.itos)} words.")
+    logger.info(f"TGT has {len(TGT.vocab.itos)} words.")
+    train_iterator, valid_iterator, test_iterator = BucketIterator.splits(
+        (train, valid, test),
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        sort_key=lambda x: len(x.src) + len(x.tgt),
+        sort_within_batch=True,
+        device=args.device)
+
+    return {"fields": {'src': SRC, 'tgt': TGT}, "vocab": SRC.vocab, "train_data": train, "val_data": valid,
+            "test_data": test, "train_iterator": train_iterator,
+            "valid_iterator": valid_iterator, "test_iterator": test_iterator}
+
+
 def seq2seq_dataset(args, is_train=True, tokenizer=None):
     MIN_FREQ = args.min_freq
     BATCH_SIZE = args.bs
@@ -52,6 +114,7 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
     pad_token = '<pad>'
     sos_token = '<sos>'
     eos_token = '<eos>'
+    # TODO 抽象tokenizer为一个类，具有属性类名和tokenize函数,解决下面的硬编码提示使用的是什么tokenizer
     if tokenizer is None:
         print("Tokenizer is not given! Using spacy tokenizer as default.")
         tokenizer = tokenize_en

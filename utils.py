@@ -113,7 +113,7 @@ def print_metrics(metrics, mode=''):
     print("#" * 20, mode + ' metrics ', "#" * 20)
     for k, v in metrics.items():
         print(f'\t{k}: {v:.5f}')
-    print("#" * 20, ' end ', "#" * (24 + len(mode)))
+    #  print("#" * 20, ' end ', "#" * (24 + len(mode)))
 
 
 def write_metrics(metrics, file, mode=''):
