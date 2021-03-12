@@ -147,12 +147,12 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
         logger.info("No pre-defined vocab given, building new vocab now...")
         # train disc的时候保存vocab文件，到了train gen时加载，保证两者的embedding共用一个vocab
         SRC.build_vocab(train,
-                      # max_size=35000,
+                      max_size=args.max_vocab_size,
                       min_freq=MIN_FREQ,
                       vectors=vectors
                       )
         TGT.build_vocab(train,
-                        # max_size=35000,
+                        max_size=args.max_vocab_size,
                         min_freq=MIN_FREQ,
                         vectors=vectors)
         logger.info(f"SRC has {len(SRC.vocab.itos)} words.")

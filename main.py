@@ -8,7 +8,7 @@ import torch.optim as optim
 import time
 import math
 from tqdm import tqdm
-from allennlp.training.metrics import BLEU
+#  from allennlp.training.metrics import BLEU
 from optim.Optim import NoamOptimWrapper, AdamOptimizer
 from utils import *
 import argparse
@@ -49,6 +49,8 @@ def main():
     parser.add_argument('--warmup', default=0, type=int, help='warmup steps, 0 means not using NoamOpt')
     parser.add_argument('--cell_type', default='LSTM', type=str, help='cell type of encoder/decoder, LSTM or GRU')
     parser.add_argument('--comment', default='', type=str, help='comment, will be used as suffix of save directory')
+    parser.add_argument('--smoothing', default=0.0, type=float, help='smoothing rate of computing kl div loss')
+    parser.add_argument('--max_vocab_size', default=None, type=int, help='max size of vocab')
 
     args, unparsed = parser.parse_known_args()
     writer = None
@@ -65,6 +67,8 @@ def main():
     device = torch.device(args.gpu if (torch.cuda.is_available() and args.gpu >= 0) else 'cpu')
     args.device = device
 
+    #  from data.dataset import jieba_tokenize
+    #  dataset = seq2seq_dataset(args, tokenizer=jieba_tokenize)
     dataset = seq2seq_dataset(args)
     #  dataset = load_iwslt(args)
     SRC = dataset['fields']['src']
@@ -99,15 +103,21 @@ def main():
     #  optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
     if args.warmup > 0:
         optimizer = NoamOptimWrapper(args.hid_dim, 1, args.warmup, optimizer)
-    criterion = nn.CrossEntropyLoss(ignore_index=TGT_PAD_IDX, reduction='sum')
+    #  criterion = nn.CrossEntropyLoss(ignore_index=TGT_PAD_IDX, reduction='sum')
+    criterion = LabelSmoothing(len(TGT.vocab), padding_idx=TGT_PAD_IDX, smoothing=args.smoothing)
 
+    # TODO 取消hard-code式保存最佳指标
     best_epoch = 0
     best_valid_loss = float('inf')
-    best_bleu = 0
+    best_bleu_1 = 0
+    best_bleu_2 = 0
     best_dist_1 = 0
     best_dist_2 = 0
     global_step = 0
-    bleu = BLEU(exclude_indices={TGT_PAD_IDX, TGT.vocab.stoi[TGT.eos_token], TGT.vocab.stoi[TGT.init_token]})
+    #  bleu_1 = BLEU(ngram_weights=[1, 0, 0, 0], exclude_indices={TGT_PAD_IDX, TGT.vocab.stoi[TGT.eos_token], TGT.vocab.stoi[TGT.init_token]})
+    #  bleu_2 = BLEU(ngram_weights=[0.5, 0.5, 0, 0], exclude_indices={TGT_PAD_IDX, TGT.vocab.stoi[TGT.eos_token], TGT.vocab.stoi[TGT.init_token]})
+    #  bleu = {"bleu_1": bleu_1, "bleu_2": bleu_2}
+    bleu = BLEU(n=2, exclude_indices={TGT_PAD_IDX, TGT.vocab.stoi[TGT.eos_token], TGT.vocab.stoi[TGT.init_token]})
     dist = Distinct(exclude_tokens={TGT_PAD_IDX, TGT.vocab.stoi[TGT.eos_token], TGT.vocab.stoi[TGT.init_token]})
 
     for epoch in range(N_EPOCHS):
@@ -129,7 +139,8 @@ def main():
             write_metrics_to_writer(test_metrics, writer, global_step, mode='Test')
             best_valid_loss = valid_metrics['epoch_loss']  if valid_metrics['epoch_loss'] < best_valid_loss else best_valid_loss
             best_epoch = epoch if valid_metrics['epoch_loss'] == best_valid_loss else best_epoch
-            best_bleu = valid_metrics['bleu'] if valid_metrics['bleu'] > best_bleu else best_bleu
+            best_bleu_1 = valid_metrics['bleu_1'] if valid_metrics['bleu_1'] > best_bleu_1 else best_bleu_1
+            best_bleu_2 = valid_metrics['bleu_2'] if valid_metrics['bleu_2'] > best_bleu_2 else best_bleu_2
             best_dist_1 = valid_metrics['dist_1'] if valid_metrics['dist_1'] > best_dist_1 else best_dist_1
             best_dist_2 = valid_metrics['dist_2'] if valid_metrics['dist_2'] > best_dist_2 else best_dist_2
             torch.save(model.state_dict(), os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
@@ -137,7 +148,8 @@ def main():
                 valid_metrics['Best Epoch'] = best_epoch + 1
                 valid_metrics['Best Valid Loss'] = best_valid_loss
                 valid_metrics['Best PPL'] = math.exp(best_valid_loss)
-                valid_metrics['Best BLEU'] = best_bleu
+                valid_metrics['Best BLEU-1'] = best_bleu_1
+                valid_metrics['Best BLEU-2'] = best_bleu_2
                 valid_metrics['Best Dist-1'] = best_dist_1
                 valid_metrics['Best Dist-2'] = best_dist_2
 

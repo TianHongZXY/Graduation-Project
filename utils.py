@@ -164,3 +164,62 @@ class Distinct:
             self.n_grams_all = [Counter() for _ in range(self.n)]
         return dist_n
 
+
+from allennlp.training.metrics import BLEU as AllennlpBLEU
+class BLEU:
+    """Simple wrapper of allennlp.training.metrics.BLEU, compute bleu1~n where n is defined by user,
+    n should be in range [1, 4]"""
+    def __init__(self, n, exclude_indices=None):
+        self.weights = [[1, 0, 0, 0],
+                        [0.5, 0.5, 0, 0],
+                        [1/3, 1/3, 1/3, 0],
+                        [0.25, 0.25, 0.25, 0.25]]
+        self.n = n
+        self.bleus = [AllennlpBLEU(ngram_weights=self.weights[i], exclude_indices=exclude_indices) for i in range(n)]
+
+    def forward(self, predictions, gold_targets):
+        for bleu in self.bleus:
+            bleu(predictions, gold_targets)
+
+    def get_metric(self, reset=False):
+        metrics = dict()
+        for i, bleu in enumerate(self.bleus):
+            metrics[f"bleu_{i + 1}"] = bleu.get_metric(reset=reset)['BLEU']
+        return metrics
+
+
+class LabelSmoothing(nn.Module):
+    "Implement label smoothing using KL div loss"
+    def __init__(self, size, padding_idx, smoothing=0.0):
+        super(LabelSmoothing, self).__init__()
+        assert smoothing >= 0 and smoothing < 1
+        self.criterion = nn.KLDivLoss(reduction='sum')
+        self.ce_criterion = nn.NLLLoss(reduction='sum', ignore_index=padding_idx)
+        # self.ce_criterion = nn.CrossEntropyLoss(reduction='sum', ignore_index=padding_idx)
+        self.padding_idx = padding_idx
+        self.confidence = 1.0 - smoothing
+        self.smoothing = smoothing
+        self.size = size
+        self.true_dist = None
+
+    def forward(self, x, target):
+        # x = [batch, category]
+        # target = [batch, ]
+        assert x.size(1) == self.size
+        true_dist = x.data.clone()
+        #  先把true_dist的元素全填为smoothing / (size - 2) 的值，-2是因为真实标签位置和padding位置的概率都要另设
+        true_dist.fill_(self.smoothing / (self.size - 2))
+        #  再把true_dist在列上以target为索引的地方的值变为confidence
+        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
+        #  把padding的位置概率都变为0
+        true_dist[:, self.padding_idx] = 0
+        #  把target就预测padding token的整个概率分布都设为0
+        mask = torch.nonzero(target.data == self.padding_idx)
+        if mask.dim() > 0:
+            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+        self.true_dist = true_dist
+        #  用true_dist这个经过平滑的概率分布去替代target的one-hot概率分布是为了避免模型的预测分布也向one-hot靠近
+        #  避免模型变得太过confident，模型学着预测时变得更不确定，这对ppl有伤害，但是能够提升预测的准确性和BLEU分数
+        #  当x的概率分布很尖锐时，loss将变大
+        return self.criterion(x, torch.autograd.Variable(true_dist, requires_grad=False)), self.ce_criterion(x, target.long())
+

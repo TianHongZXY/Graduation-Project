@@ -2,6 +2,7 @@ from tqdm import tqdm
 import torch
 import math
 import time
+import torch.nn.functional as F
 
 
 def train(args, model, iterator, optimizer, criterion, fields, writer=None):
@@ -21,6 +22,9 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None):
 
         # output = [tgt len, batch size, vocab_size]
         output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=args.teaching_rate)
+        # 用于labelsmoothing criterion
+        output = F.log_softmax(output, dim=-1)
+
         #  output = model.forward_parallel(src, src_len.cpu().long(), tgt)
         vocab_size = len(fields['tgt'].vocab)
         # output = [(tgt len - 1) * batch size, vocab_size]
@@ -28,7 +32,8 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None):
         output = output[1:].reshape(-1, vocab_size)
         tgt = tgt[1:].reshape(-1)
 
-        loss = criterion(output, tgt)
+        loss, ce_loss = criterion(output, tgt)
+        ce_loss /= ntokens
         loss /= ntokens
         loss.backward()
 
@@ -37,12 +42,12 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None):
         if i % 50 == 0:
             elapsed = time.time() - start
             print("Global Step: %d\tEpoch Step: %d\tLoss: %f\tTokens per Sec: %f\tlr: %f" %
-                        (optimizer.get_global_step(), i, loss, total_tokens / elapsed, optimizer.rate()))
+                        (optimizer.get_global_step(), i, ce_loss.item(), total_tokens / elapsed, optimizer.rate()))
         if writer:
-            writer.add_scalar('Train_Loss', loss.item(), optimizer.get_global_step())
-            writer.add_scalar('Train_PPL', math.exp(loss.item()), optimizer.get_global_step())
+            writer.add_scalar('Train_Loss', ce_loss.item(), optimizer.get_global_step())
+            writer.add_scalar('Train_PPL', math.exp(ce_loss.item()), optimizer.get_global_step())
 
-        total_loss += loss.item() * ntokens
+        total_loss += ce_loss.item() * ntokens
         #  break
     return {'epoch_loss': total_loss / total_tokens,
             'PPL': math.exp(total_loss / total_tokens),
@@ -70,7 +75,7 @@ def evaluate(args, model, iterator, criterion, fields, bleu=None, dist=None):
             pred = output[1:].argmax(-1).T
             if bleu:
                 gold = tgt[1:].T
-                bleu(predictions=pred, gold_targets=gold)
+                bleu.forward(predictions=pred, gold_targets=gold)
             if dist:
                 dist.forward([hyps for hyps in pred.detach().cpu().numpy()])
 
@@ -79,14 +84,17 @@ def evaluate(args, model, iterator, criterion, fields, bleu=None, dist=None):
             output = output[1:].reshape(-1, vocab_size)
             tgt = tgt[1:].reshape(-1)
 
-            loss = criterion(output, tgt)
-            total_loss += loss.item()
+            # 用于labelsmoothing criterion
+            output = F.log_softmax(output, dim=-1)
+            loss, ce_loss = criterion(output, tgt)
+            total_loss += ce_loss.item()
             #  break
     metrics = {'epoch_loss': total_loss / total_tokens,
                'PPL': math.exp(total_loss / total_tokens),
                }
     if bleu:
-        metrics['bleu'] = bleu.get_metric(reset=True)['BLEU']
+        metrics.update(bleu.get_metric(reset=True))
+        #  metrics['bleu'] = bleu.get_metric(reset=True)['BLEU']
     if dist:
         dist_n = dist.get_metric(reset=True)
         metrics.update(dist_n)
