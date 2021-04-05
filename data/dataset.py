@@ -9,10 +9,10 @@ import logging
 import coloredlogs
 import jieba
 import spacy
-spacy_en = spacy.load('en')
+
+spacy_en = spacy.load('en_core_web_sm')
 logger = logging.getLogger(__name__)
 coloredlogs.install(level='INFO', logger=logger)
-
 
 def tokenize_en(text):
     return [tok.text for tok in spacy_en.tokenizer(text)]
@@ -57,8 +57,8 @@ def build_field_vocab(vocab_file, field, min_freq=1, vectors=None):
 def load_iwslt(args):
     # For data loading.
     import spacy
-    spacy_de = spacy.load('de')
-    spacy_en = spacy.load('en')
+    spacy_de = spacy.load('de_core_news_sm')
+    spacy_en = spacy.load('en_core_web_sm')
     BATCH_SIZE = args.bs
     MIN_FREQ = args.min_freq
     MAX_LEN = args.maxlen
@@ -107,6 +107,28 @@ def load_iwslt(args):
             "valid_iterator": valid_iterator, "test_iterator": test_iterator}
 
 
+import dill
+def dump_examples(args, train, valid, test):
+    # 保存examples
+    with open(os.path.join(args.dataset_dir_path, 'train_examples'), 'wb') as f:
+        dill.dump(train.examples, f)
+    with open(os.path.join(args.dataset_dir_path, 'valid_examples'), 'wb') as f:
+        dill.dump(valid.examples, f)
+    with open(os.path.join(args.dataset_dir_path, 'test_examples'), 'wb') as f:
+        dill.dump(test.examples, f)
+
+
+def load_examples(args):
+    # 加载examples
+    with open(os.path.join(args.dataset_dir_path, 'train_examples'), 'rb') as f:
+        train_examples = dill.load(f)
+    with open(os.path.join(args.dataset_dir_path, 'valid_examples'), 'rb') as f:
+        valid_examples = dill.load(f)
+    with open(os.path.join(args.dataset_dir_path, 'test_examples'), 'rb') as f:
+        test_examples = dill.load(f)
+    return train_examples, valid_examples, test_examples
+
+
 def seq2seq_dataset(args, is_train=True, tokenizer=None):
     MIN_FREQ = args.min_freq
     BATCH_SIZE = args.bs
@@ -121,29 +143,42 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
     SRC = data.Field(tokenize=tokenizer, pad_token=pad_token,
                      include_lengths=True, 
                      #  batch_first=True,
+                     lower=True,
                      )
     TGT = data.Field(tokenize=tokenizer, init_token=sos_token,
                      eos_token=eos_token, pad_token=pad_token,
                      include_lengths=True, 
                      #  batch_first=True,
+                     lower=True,
                      )
     # fields = [('src', SRC), ('tgt', TGT), ('cue', SRC)]
     fields = [('src', SRC), ('tgt', TGT)]
-    filter_pred = None
+
     if MAX_LEN:
-        filter_pred = lambda x: len(vars(x)['src']) <= MAX_LEN and len(vars(x)['tgt']) <= MAX_LEN
-    dataset = data.TabularDataset.splits(path=args.dataset_dir_path, format='TSV', train=args.train_file,
-                                         validation=args.valid_file, test=args.test_file, fields=fields,
-                                         filter_pred=filter_pred,
-                                         )
-    train, valid, test = dataset
+        filter_pred = lambda x: len(vars(x)['src']) > 0 and len(vars(x)['tgt']) > 0 and len(vars(x)['src']) <= MAX_LEN and len(vars(x)['tgt']) <= MAX_LEN
+    else:
+        filter_pred = lambda x: len(vars(x)['src']) > 0 and len(vars(x)['tgt']) > 0
+
+    if args.use_serialized:
+        train_examples, valid_examples, test_examples = load_examples(args)
+        train = data.Dataset(examples=train_examples, fields=fields, filter_pred=filter_pred)
+        valid = data.Dataset(examples=valid_examples, fields=fields, filter_pred=filter_pred)
+        test = data.Dataset(examples=test_examples, fields=fields, filter_pred=filter_pred)
+    else:
+        dataset = data.TabularDataset.splits(path=args.dataset_dir_path, format='TSV', train=args.train_file,
+                                             validation=args.valid_file, test=args.test_file, fields=fields,
+                                             filter_pred=filter_pred,
+                                             )
+        train, valid, test = dataset
+        if args.serialize:
+            dump_examples(args, train, valid, test)
     vectors = None
     if args.pretrained_embed_file is not None:
         logger.info(f"Using pretrained vectors {args.pretrained_embed_file}")
         if not os.path.exists('.vector_cache'):
             os.mkdir('.vector_cache')
             vectors = Vectors(name=args.pretrained_embed_file)
-    if args.vocab_file is None:
+    if not args.use_serialized:
         logger.info("No pre-defined vocab given, building new vocab now...")
         # train disc的时候保存vocab文件，到了train gen时加载，保证两者的embedding共用一个vocab
         SRC.build_vocab(train,
@@ -155,25 +190,22 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
                         max_size=args.max_vocab_size,
                         min_freq=MIN_FREQ,
                         vectors=vectors)
+        if args.serialize:
+            with open(os.path.join(args.dataset_dir_path, 'src_vocab'), 'wb') as f:
+                dill.dump(SRC.vocab, f)
+            with open(os.path.join(args.dataset_dir_path, 'tgt_vocab'), 'wb') as f:
+                dill.dump(TGT.vocab, f)
         logger.info(f"SRC has {len(SRC.vocab.itos)} words.")
         logger.info(f"TGT has {len(TGT.vocab.itos)} words.")
 
-        if is_train and args.save:
-            # 保存时保存所有出现的单词，不管是否超过min_freq的要求
-            logger.info(f"Saving vocab file to {args.save_dir}")
-            with open(os.path.join(args.save_dir, 'src_vocab.txt'), 'w') as f:
-                for k, v in SRC.vocab.freqs.most_common():
-                    f.write("{}:{}\n".format(k, v))
-            with open(os.path.join(args.save_dir, 'tgt_vocab.txt'), 'w') as f:
-                for k, v in TGT.vocab.freqs.most_common():
-                    f.write("{}:{}\n".format(k, v))
     else:
         #  优先使用给定的vocab file
-        logger.info(f"Using vocab file from {args.save_dir}")
-        SRC = build_field_vocab(vocab_file=os.path.join(args.save_dir, 'src_vocab.txt'),
-                                field=SRC, min_freq=MIN_FREQ, vectors=vectors)
-        TGT = build_field_vocab(vocab_file=os.path.join(args.save_dir, 'tgt_vocab.txt'),
-                                field=TGT, min_freq=MIN_FREQ, vectors=vectors)
+        logger.info(f"Using vocab file from {args.dataset_dir_path}")
+        with open(os.path.join(args.dataset_dir_path, 'src_vocab'), 'rb') as f:
+            SRC.vocab = dill.load(f)
+        with open(os.path.join(args.dataset_dir_path, 'tgt_vocab'), 'rb') as f:
+            TGT.vocab = dill.load(f)
+
     train_iterator, valid_iterator, test_iterator = BucketIterator.splits(
         (train, valid, test),
         batch_size=BATCH_SIZE,
@@ -182,6 +214,7 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
         sort_within_batch=True,
         device=args.device)
 
-    return {"fields": {'src': SRC, 'tgt': TGT}, "vocab": SRC.vocab, "train_data": train, "val_data": valid,
+    return {"fields": {'src': SRC, 'tgt': TGT}, "train_data": train, "val_data": valid,
             "test_data": test, "train_iterator": train_iterator,
             "valid_iterator": valid_iterator, "test_iterator": test_iterator}
+
