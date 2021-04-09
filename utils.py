@@ -3,6 +3,7 @@ import numpy as np
 import torch.nn as nn
 import copy
 from collections import Counter
+import os
 
 
 def corrcoef(x, rowvar=True):
@@ -190,12 +191,19 @@ class BLEU:
 
 class LabelSmoothing(nn.Module):
     "Implement label smoothing using KL div loss"
-    def __init__(self, size, padding_idx, smoothing=0.0):
+    def __init__(self, args, size, padding_idx, smoothing=0.0):
         super(LabelSmoothing, self).__init__()
-        assert smoothing >= 0 and smoothing < 1
+        assert smoothing > 0 and smoothing < 1
         self.criterion = nn.KLDivLoss(reduction='sum')
-        self.ce_criterion = nn.NLLLoss(reduction='sum', ignore_index=padding_idx)
-        # self.ce_criterion = nn.CrossEntropyLoss(reduction='sum', ignore_index=padding_idx)
+        self.criterion.to(args.device)
+        # ignore_index只是让padding_idx的梯度不参与计算，并没有把padding_idx上的loss排除在总的loss之外，
+        # 所以这样计算得到的loss是偏大的，应该再设置weight为[0,1,1,…]（0表示padding_idx），这样就能保证总的loss不包括padding_idx上的loss
+        weight = torch.ones(size)
+        weight[padding_idx] = 0
+        weight.to(args.device)
+        self.ce_criterion = nn.NLLLoss(reduction='sum', ignore_index=padding_idx, weight=weight)
+        self.ce_criterion.to(args.device)
+        
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing
@@ -222,4 +230,47 @@ class LabelSmoothing(nn.Module):
         #  避免模型变得太过confident，模型学着预测时变得更不确定，这对ppl有伤害，但是能够提升预测的准确性和BLEU分数
         #  当x的概率分布很尖锐时，loss将变大
         return self.criterion(x, torch.autograd.Variable(true_dist, requires_grad=False)), self.ce_criterion(x, target.long())
+
+
+def write_src_tgt_to_file(args, batch, src_vocab, tgt_vocab, mode='valid'):
+    num_lines = 0
+    with open(os.path.join(args.save_dir, 'posts-' + mode + '.txt'), 'a') as fp:
+        with open(os.path.join(args.save_dir, 'answers-'+ mode + '.txt'), 'a') as fa:
+            src, src_len = batch.src
+            src = src.T
+            # tgt = [tgt len, batch size]
+            tgt, tgt_len = batch.tgt
+            tgt = tgt.T
+            src = [[src_vocab.itos[x] for x in ex] for ex in src]
+            tgt = [[tgt_vocab.itos[x] for x in ex] for ex in tgt]
+            for k in range(len(src)):
+                fp.write(' '.join(src[k][:src_len[k]]).strip() + '\n')
+                fa.write(' '.join(tgt[k][1:tgt_len[k] - 1]).strip() + '\n')
+                num_lines += 1
+    return num_lines
+
+
+def write_pred_to_file(args, response, tgt_vocab, mode='valid'):
+    num_lines = 0
+    with open(os.path.join(args.save_dir, 'responses-' + mode + '.txt'), 'a') as fr:
+        #  response = [batch_size, len]
+        res = []
+        TGT_EOS_IDX = tgt_vocab.stoi['<eos>']
+
+        for ex in response:
+            wrote = False
+            cur = []
+            for x in ex:
+                if x != TGT_EOS_IDX:
+                    cur.append(tgt_vocab.itos[x])
+                else:
+                    fr.write(' '.join(cur).strip() + '\n')
+                    wrote = True
+                    num_lines += 1
+                    break
+            if not wrote:
+                fr.write(' '.join(cur).strip() + '\n')
+                num_lines += 1
+
+    return num_lines
 

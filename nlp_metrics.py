@@ -3,6 +3,8 @@ import sys
 from rouge import Rouge 
 from collections import defaultdict
 import numpy as np
+import sys
+from metrics import calc_nlp_metrics
 
 def write_xml(paths_in, path_out, role, n_lines=None):
     lines = [
@@ -149,17 +151,26 @@ def calc_rouge(hyp, ref):
 
     return rouge_scores
 
-if __name__ == '__main__':
-    from metrics import nlp_metrics
-    nist, sbleu, bleu, meteor, entropy, diversity, avg_len = nlp_metrics(
-          path_refs=["answers.txt"], path_hyp="responses.txt")
-    print(f'nist: {nist}')
+
+def calc_metrics(path_refs, path_hyp):
+    #  nist, sbleu, bleu, meteor, entropy, diversity, avg_len = nlp_metrics(
+    #        path_refs=["answers-" + mode + ".txt"], path_hyp="responses-" + mode + ".txt")
+    bleu, entropy, diversity, avg_len = calc_nlp_metrics(
+          path_refs=[path_refs], path_hyp=path_hyp)
+    #  print(f'nist: {nist}')
     print(f'bleu: {bleu}')
-    print(f'smoothed_bleu: {sbleu}')
-    print(f'meteor: {meteor}')
+    #  print(f'smoothed_bleu: {sbleu}')
+    #  print(f'meteor: {meteor}')
     print(f'entropy: {entropy}')
     print(f'diversity: {diversity}')
     print(f'avg_len: {avg_len}')
+    
+    metrics = {'bleu': bleu, 
+            'diversity': diversity, 
+            'entropy': entropy, 
+            'avg_len': avg_len
+            }
+    return metrics
 
     #  write_nist_file(['answers.txt'], 'responses.txt', ['posts.txt'])
     #  get nist score and bleu score
@@ -170,12 +181,12 @@ if __name__ == '__main__':
     #  java -Xmx1g -jar meteor-1.5/meteor-1.5.jar responses.txt answers.txt -r 1 -l en -norm
     #  java -Xmx1g -jar meteor-1.5/meteor-1.5.jar responses.txt posts.txt -r 1 -l en -norm
 
-    answer_text = open('answers.txt', encoding='utf-8').readlines()
-    answer_sen = [s.strip('\n') for s in answer_text]
-    response_text = open('responses.txt', encoding='utf-8').readlines()
-    response_sen = [s.strip('\n') for s in response_text]
-    post_text = open('posts.txt', encoding='utf-8').readlines()
-    post_sen = [s.strip('\n') for s in post_text]
+    #  answer_text = open('answers-' + mode + '.txt', encoding='utf-8').readlines()
+    #  answer_sen = [s.strip('\n') for s in answer_text]
+    #  response_text = open('responses-' + mode + '.txt', encoding='utf-8').readlines()
+    #  response_sen = [s.strip('\n') for s in response_text]
+    #  post_text = open('posts-' + mode + '.txt', encoding='utf-8').readlines()
+    #  post_sen = [s.strip('\n') for s in post_text]
 
 
     #get entropy score
@@ -194,10 +205,10 @@ if __name__ == '__main__':
     #  print(len)
 
     #get rouge score
-    rouge_scores = calc_rouge(response_sen, answer_sen)
-    print('rouge score:')
-    print(rouge_scores)
+    #  rouge_scores = calc_rouge(response_sen, answer_sen)
+    #  print('rouge score:')
+    #  print(rouge_scores)
 
-    novel_rouge_scores = calc_rouge(response_sen, post_sen)
-    print('novel rouge score:')
-    print(novel_rouge_scores)
+    #  novel_rouge_scores = calc_rouge(response_sen, post_sen)
+    #  print('novel rouge score:')
+    #  print(novel_rouge_scores)

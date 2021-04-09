@@ -140,7 +140,7 @@ def calc_diversity(path_hyp):
 				tokens[n] += 1
 	div1 = 1. * len(types[0].keys())/tokens[0]
 	div2 = 1. * len(types[1].keys())/tokens[1]
-	return [div1, div2]
+	return [(div1, len(types[0].keys())), (div2, len(types[1].keys()))]
 
 
 def calc_nltk_bleu(path_refs, path_hyp, n_lines):
@@ -173,19 +173,20 @@ def calc_nltk_bleu(path_refs, path_hyp, n_lines):
 	return bleu
 
 
-def nlp_metrics(path_refs, path_hyp, fld_out='temp',  n_lines=None):
-	print('calc_nist_bleu')
-	nist, sbleu = calc_nist_bleu(path_refs, path_hyp, fld_out, n_lines)
+def calc_nlp_metrics(path_refs, path_hyp, fld_out='temp',  n_lines=None):
+	#  print('calc_nist_bleu')
+	#  nist, sbleu = calc_nist_bleu(path_refs, path_hyp, fld_out, n_lines)
 	print('calc_nltk_bleu')
 	bleu = calc_nltk_bleu(path_refs, path_hyp, n_lines)
-	print('calc_meteor')
-	meteor = calc_meteor(path_refs, path_hyp, fld_out, n_lines)
+	#  print('calc_meteor')
+	#  meteor = calc_meteor(path_refs, path_hyp, fld_out, n_lines)
 	#meteor = np.nan
 	print('calc others')
 	entropy = calc_entropy(path_hyp, n_lines)
 	div = calc_diversity(path_hyp)
 	avg_len = calc_len(path_hyp, n_lines)
-	return nist, sbleu, bleu, meteor, entropy, div, avg_len
+	#  return nist, sbleu, bleu, meteor, entropy, div, avg_len
+	return bleu, entropy, div, avg_len
 
 
 def _write_merged_refs(paths_in, path_out, n_lines=None):

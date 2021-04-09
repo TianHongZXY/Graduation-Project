@@ -98,7 +98,7 @@ def load_iwslt(args):
         (train, valid, test),
         batch_size=BATCH_SIZE,
         shuffle=True,
-        sort_key=lambda x: len(x.src) + len(x.tgt),
+        sort_key=lambda x: len(x.src),
         sort_within_batch=True,
         device=args.device)
 
@@ -138,8 +138,10 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
     eos_token = '<eos>'
     # TODO 抽象tokenizer为一个类，具有属性类名和tokenize函数,解决下面的硬编码提示使用的是什么tokenizer
     if tokenizer is None:
-        print("Tokenizer is not given! Using spacy tokenizer as default.")
+        logger.info("Tokenizer is not given! Using spacy tokenizer as default.")
         tokenizer = tokenize_en
+    else:
+        logger.info(f"Using given tokenizer {args.tokenizer}")
     SRC = data.Field(tokenize=tokenizer, pad_token=pad_token,
                      include_lengths=True, 
                      #  batch_first=True,
@@ -209,8 +211,8 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
     train_iterator, valid_iterator, test_iterator = BucketIterator.splits(
         (train, valid, test),
         batch_size=BATCH_SIZE,
-        shuffle=True,
-        sort_key=lambda x: len(x.src) + len(x.tgt),
+        shuffle=not args.inference,
+        sort_key=lambda x: len(x.src),
         sort_within_batch=True,
         device=args.device)
 
