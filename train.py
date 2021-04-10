@@ -4,9 +4,9 @@ import math
 import time
 import torch.nn.functional as F
 from utils import write_src_tgt_to_file, write_pred_to_file
+import numpy as np
 
-
-def train(args, model, iterator, optimizer, criterion, fields, writer=None):
+def train(args, model, iterator, optimizer, criterion, fields, writer=None, pmi=None):
     model.train()
 
     start = time.time()
@@ -17,6 +17,17 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None):
 
     for i, batch in enumerate(iterator):
         src, src_len = batch.src
+        batch_size = src.size(1)
+        seq_len = src.size(0)
+        if pmi is not None:
+            # src_idx = [batch size * seq len, ]
+            src_idx = src.cpu().numpy().T.reshape(-1)
+            src_pmi = pmi[src_idx, :]
+            # src_pmi = [batch size * seq len, tgt vocab size]
+            src_pmi = torch.FloatTensor(src_pmi.todense()).to(args.device)
+            src_pmi = src_pmi.view(batch_size, seq_len, -1)
+            # src_pmi = [batch size, tgt vocab size]
+            src_pmi = torch.sum(src_pmi, dim=1)
         # tgt = [tgt len, batch size]
         tgt, tgt_len = batch.tgt
         ntokens = (tgt[1:] != tgt_padding_idx).data.sum()
@@ -24,7 +35,7 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None):
         optimizer.zero_grad()
 
         # output = [tgt len, batch size, vocab_size]
-        output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=args.teaching_rate)
+        output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=args.teaching_rate)
         # 用于求KL-DIV Loss或NLL Loss需要先求log softmax
         output = F.log_softmax(output, dim=-1)
 
@@ -63,7 +74,7 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None):
             }
 
 
-def evaluate(args, model, iterator, criterion, fields):
+def evaluate(args, model, iterator, criterion, fields, pmi=None):
     model.eval()
 
     total_loss = 0
@@ -74,12 +85,23 @@ def evaluate(args, model, iterator, criterion, fields):
     with torch.no_grad():
         for batch in tqdm(iterator):
             src, src_len = batch.src
+            batch_size = src.size(1)
+            seq_len = src.size(0)
+            if pmi is not None:
+                # src_idx = [batch size * seq len, ]
+                src_idx = src.cpu().numpy().T.reshape(-1)
+                src_pmi = pmi[src_idx, :]
+                # src_pmi = [batch size * seq len, tgt vocab size]
+                src_pmi = torch.FloatTensor(src_pmi.todense()).to(args.device)
+                src_pmi = src_pmi.view(batch_size, seq_len, -1)
+                # src_pmi = [batch size, tgt vocab size]
+                src_pmi = torch.sum(src_pmi, dim=1)
             # tgt = [tgt len, batch size]
             tgt, tgt_len = batch.tgt
             ntokens = (tgt[1:] != tgt_padding_idx).data.sum()
             total_tokens += ntokens
             # output = [tgt len, batch size, vocab_size]
-            output = model(src, src_len.cpu().long(), tgt, 0)  # turn off teacher forcing
+            output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)  # turn off teacher forcing
 
             # pred = [batch size, tgt len - 1]
             #  pred = output[1:].argmax(-1).T
@@ -106,7 +128,7 @@ def evaluate(args, model, iterator, criterion, fields):
     return metrics
 
 
-def inference(args, model, iterator, criterion, fields, mode):
+def inference(args, model, iterator, fields, mode, pmi=None):
     model.eval()
     src_vocab = fields['src'].vocab
     tgt_vocab = fields['tgt'].vocab
@@ -115,10 +137,21 @@ def inference(args, model, iterator, criterion, fields, mode):
         for batch in tqdm(iterator):
             src_num_lines = write_src_tgt_to_file(args, batch, src_vocab, tgt_vocab, mode)
             src, src_len = batch.src
+            batch_size = src.size(1)
+            seq_len = src.size(0)
+            if pmi is not None:
+                # src_idx = [batch size * seq len, ]
+                src_idx = src.cpu().numpy().T.reshape(-1)
+                src_pmi = pmi[src_idx, :]
+                # src_pmi = [batch size * seq len, tgt vocab size]
+                src_pmi = torch.FloatTensor(src_pmi.todense()).to(args.device)
+                src_pmi = src_pmi.view(batch_size, seq_len, -1)
+                # src_pmi = [batch size, tgt vocab size]
+                src_pmi = torch.sum(src_pmi, dim=1)
             # tgt = [tgt len, batch size]
             tgt, tgt_len = batch.tgt
             # output = [tgt len, batch size, vocab_size]
-            output = model(src, src_len.cpu().long(), tgt, 0)  # turn off teacher forcing
+            output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)  # turn off teacher forcing
 
             # pred = [batch size, tgt len - 1]
             pred = output[1:].argmax(-1).T
