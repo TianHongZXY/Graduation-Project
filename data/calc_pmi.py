@@ -34,7 +34,7 @@ def calc_pmi(file_path, src_vocab_path, tgt_vocab_path):
                 print(line)
                 print(dialog)
                 continue
-            src, tgt = dialog[-1], dialog[1]
+            src, tgt = dialog[0], dialog[1]
             corpus_size += 1
             #  src_words = tokenize_en(src)
             #  tgt_words = tokenize_en(tgt)
@@ -50,22 +50,14 @@ def calc_pmi(file_path, src_vocab_path, tgt_vocab_path):
     px /= corpus_size
     py /= corpus_size
     p_xy /= corpus_size
-    p_xy += 1e-12
-    #  print('px shape: ', px.shape)
-    #  print('py shape: ', py.shape)
-    #  p_xy= sparse.csr_matrix(p_xy)
-    #  px_dot_py = np.matmul(px, py.T) + 1e-12
     px_sparse = sparse.csr_matrix(px)
-    #  print("px_sparse", px_sparse)
     py_sparse = sparse.csr_matrix(py.T)
-    #  print("py_sparse", py_sparse)
-    p_xy_sparse = sparse.csr_matrix(p_xy)
-    #  print("p_xy_sparse", p_xy_sparse)
     print('px_sparse shape: ', px_sparse.shape)
     print('py_sparse shape: ', py_sparse.shape)
     px_dot_py = px_sparse.dot(py_sparse)
     #  print("px_dot_py", px_dot_py)
     #  print('px_dot_py shape: ', px_dot_py.shape)
+    p_xy += 1e-12
     px_dot_py = px_dot_py.todense() + 1e-12
     print("p_xy", p_xy)
     print("px_dot_py", px_dot_py)
@@ -83,6 +75,10 @@ def calc_pmi(file_path, src_vocab_path, tgt_vocab_path):
 
 
 if __name__ == '__main__':
+    #  calc_pmi(file_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/src_tgt_train.tsv",
+    #           src_vocab_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/src_vocab",
+    #           tgt_vocab_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/tgt_vocab")
+
     calc_pmi(file_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/src_tgt_train.tsv",
              src_vocab_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/src_vocab", 
              tgt_vocab_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/tgt_vocab") 
