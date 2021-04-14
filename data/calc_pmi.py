@@ -23,6 +23,7 @@ def calc_pmi(file_path, src_vocab_path, tgt_vocab_path):
     py = np.zeros(shape=(len(tgt_vocab), 1))
     p_xy = np.zeros(shape=(len(src_vocab), len(tgt_vocab)))
     pmi_matrix = np.zeros(shape=(len(src_vocab), len(tgt_vocab)))
+    corpus_size = 0
 
     with open(file_path, 'r') as f:
         for line in tqdm(f.readlines()):
@@ -32,7 +33,9 @@ def calc_pmi(file_path, src_vocab_path, tgt_vocab_path):
             except AssertionError:
                 print(line)
                 print(dialog)
-            src, tgt = dialog[0], dialog[1]
+                continue
+            src, tgt = dialog[-1], dialog[1]
+            corpus_size += 1
             #  src_words = tokenize_en(src)
             #  tgt_words = tokenize_en(tgt)
             src_words = jieba_tokenize(src)
@@ -44,13 +47,32 @@ def calc_pmi(file_path, src_vocab_path, tgt_vocab_path):
                     idx_of_y = tgt_vocab.stoi[y]
                     py[idx_of_y] += 1
                     p_xy[idx_of_x][idx_of_y] += 1
-    print('px shape: ', px.shape)
-    print('py shape: ', py.shape)
-    p_xy = np.log2(p_xy + 1e-12)
+    px /= corpus_size
+    py /= corpus_size
+    p_xy /= corpus_size
+    p_xy += 1e-12
+    #  print('px shape: ', px.shape)
+    #  print('py shape: ', py.shape)
     #  p_xy= sparse.csr_matrix(p_xy)
-    px_dot_py = np.matmul(px, py.T) + 1e-12
-    print('px_dot_py shape: ', px_dot_py.shape)
-    pmi_matrix = np.maximum(0, p_xy / px_dot_py)
+    #  px_dot_py = np.matmul(px, py.T) + 1e-12
+    px_sparse = sparse.csr_matrix(px)
+    #  print("px_sparse", px_sparse)
+    py_sparse = sparse.csr_matrix(py.T)
+    #  print("py_sparse", py_sparse)
+    p_xy_sparse = sparse.csr_matrix(p_xy)
+    #  print("p_xy_sparse", p_xy_sparse)
+    print('px_sparse shape: ', px_sparse.shape)
+    print('py_sparse shape: ', py_sparse.shape)
+    px_dot_py = px_sparse.dot(py_sparse)
+    #  print("px_dot_py", px_dot_py)
+    #  print('px_dot_py shape: ', px_dot_py.shape)
+    px_dot_py = px_dot_py.todense() + 1e-12
+    print("p_xy", p_xy)
+    print("px_dot_py", px_dot_py)
+    pmi_matrix = p_xy / px_dot_py
+    print('pmi before', pmi_matrix)
+    pmi_matrix = np.maximum(np.log2(pmi_matrix), 0)
+    print('pmi', pmi_matrix)
     print('pmi_matrix shape: ', pmi_matrix.shape)
     #  for i in tqdm(range(len(src_vocab))):
     #      for j in range(len(tgt_vocab)):
@@ -61,7 +83,7 @@ def calc_pmi(file_path, src_vocab_path, tgt_vocab_path):
 
 
 if __name__ == '__main__':
-    calc_pmi(file_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/src_tgt_train.tsv", 
+    calc_pmi(file_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/src_tgt_train.tsv",
              src_vocab_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/src_vocab", 
              tgt_vocab_path="/home/zxy21/code_and_data/Graduation-Project/datasets/LCCC-base-split/tgt_vocab") 
 
