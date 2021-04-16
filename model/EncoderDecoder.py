@@ -18,14 +18,22 @@ class RNNBaseSeq2Seq(nn.Module):
 
     def forward_parallel(self, src, src_len, tgt):
         """默认完全使用teacher forcing训练，易导致过拟合训练集"""
-        output, final_state = self.decode(tgt, self.encode(src, src_len)[1])
+        encoder_output, final_state = self.encode(src, src_len)
+        if self.encoder.cell_type == 'GRU':
+            final_state = final_state[-self.decoder.num_layers:]
+        else:
+            final_state = list(final_state)
+            final_state[0] = final_state[0][-self.decoder.num_layers:]
+            final_state[1] = final_state[1][-self.decoder.num_layers:]
+            final_state = tuple(final_state)
+        output, final_state = self.decode(tgt, final_state, encoder_output)
         logits = self.generator(output)
         # 原本的logits[i]预测的是第i + 1个词，这里为了与forward中保持一致，即第logits[i]预测第i个单词，往右偏移一位。
         logits[1:] = logits.clone()[:-1]
         return logits
 
-    def forward(self, src, src_len, tgt, teacher_forcing_ratio=0.5):
-        if teacher_forcing_ratio == 1:
+    def forward(self, src, src_len, tgt, teacher_forcing_ratio=1):
+        if teacher_forcing_ratio == 1 and self.decoder.attn is None:
             return self.forward_parallel(src, src_len, tgt)
         # src = [src len, batch size]
         # tgt = [tgt len, batch size]
@@ -40,7 +48,16 @@ class RNNBaseSeq2Seq(nn.Module):
         # last hidden state of the encoder is used as the initial hidden state of the decoder
         # output = [seq, batch size, output_size]
         # final_state = [layers, batch size, output_size]
-        output, final_state = self.encode(src, src_len)
+        encoder_output, final_state = self.encode(src, src_len)
+        if self.encoder.cell_type == 'GRU':
+            # 把encoder的最后decoder.num_layers层最后一步的隐状态作为decoder的起始状态
+            final_state = final_state[-self.decoder.num_layers:]
+        else:
+            final_state = list(final_state)
+            # 把encoder的最后decoder.num_layers层最后一步的隐状态作为decoder的起始状态
+            final_state[0] = final_state[0][-self.decoder.num_layers:]
+            final_state[1] = final_state[1][-self.decoder.num_layers:]
+            final_state = tuple(final_state)
 
         # first input to the decoder is the <sos> tokens
         # inputs = [1, batch size]
@@ -49,7 +66,7 @@ class RNNBaseSeq2Seq(nn.Module):
         for t in range(1, tgt_len):
             # output: [1, batch size, dim]
             # final_state: [layers, batch size, dim]
-            output, final_state = self.decode(inputs, final_state)
+            output, final_state = self.decode(inputs, final_state, encoder_output)
             # predictions = [batch size, tgt_vocab_size]
             predictions = self.generator(output).squeeze(0)
             logits[t] = predictions
@@ -68,13 +85,13 @@ class RNNBaseSeq2Seq(nn.Module):
     def encode(self, src, src_len):
         return self.encoder(self.src_embed(src), src_len)
 
-    def decode(self, tgt, state):
-        return self.decoder(self.tgt_embed(tgt), state)
+    def decode(self, tgt, state, encoder_output):
+        return self.decoder(self.tgt_embed(tgt), state, encoder_output)
 
 
 
 class RNNBasePMISeq2Seq(nn.Module):
-    def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
+    def __init__(self, pmi_hid_dim, encoder, decoder, src_embed, tgt_embed, generator):
         super(RNNBasePMISeq2Seq, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
@@ -82,7 +99,7 @@ class RNNBasePMISeq2Seq(nn.Module):
         self.src_embed = src_embed
         self.tgt_embed = tgt_embed
         assert decoder.get_output_dim() > encoder.get_output_dim()
-        self.vf_mlp = nn.Linear(generator.get_output_dim(), decoder.get_output_dim() - encoder.get_output_dim())
+        self.vf_mlp = nn.Linear(generator.get_output_dim(), pmi_hid_dim)
         self.generator = generator
         self.tgt_vocab_size = generator.get_output_dim()
         # self.apply(init_weights)
@@ -95,30 +112,32 @@ class RNNBasePMISeq2Seq(nn.Module):
 
         # output = [seq, batch size, output_size]
         # final_state = [layers, batch size, output_size]
-        output, final_state = self.encode(src, src_len)
+        encoder_output, final_state = self.encode(src, src_len)
         
-        # pmi = [1, batch size, decoder_output_dim - encoder_output_dim]
+        # pmi = [1, batch size, pmi_hid_dim]
         pmi = self.vf_mlp(pmi).unsqueeze(0)
+        if self.decoder.num_layers > 1:
+            pmi = pmi.repeat(self.decoder.num_layers)
         if self.encoder.cell_type == 'GRU':
-            if final_state.size(0) > 1:
-                pmi = pmi.repeat(final_state.size(0))
-            # final_state = [layers, batch size, decoder_output_dim]
+            # 把encoder的最后decoder.num_layers层最后一步的隐状态作为decoder的起始状态
+            final_state = final_state[-self.decoder.num_layers:]
             final_state = torch.cat((final_state, pmi), dim=-1)
         else:
-            if final_state[0].size(0) > 1:
-                pmi = pmi.repeat(final_state[0].size(0))
             final_state = list(final_state)
+            # 把encoder的最后decoder.num_layers层最后一步的隐状态作为decoder的起始状态
+            final_state[0] = final_state[0][-self.decoder.num_layers:]
+            final_state[1] = final_state[1][-self.decoder.num_layers:]
             final_state[0] = torch.cat((final_state[0], pmi), dim=-1)
             final_state[1] = torch.cat((final_state[1], pmi), dim=-1)
             final_state = tuple(final_state)
 
-        output, final_state = self.decode(tgt, final_state)
+        output, final_state = self.decode(tgt, final_state, encoder_output)
         logits = self.generator(output)
         logits[1:] = logits.clone()[:-1]
         return logits
 
-    def forward(self, src, src_len, tgt, pmi, teacher_forcing_ratio=0.5):
-        if teacher_forcing_ratio == 1:
+    def forward(self, src, src_len, tgt, pmi, teacher_forcing_ratio=1):
+        if teacher_forcing_ratio == 1 and self.decoder.attn is None:
             return self.forward_parallel(src, src_len, tgt, pmi=pmi)
         # src = [src len, batch size]
         # tgt = [tgt len, batch size]
@@ -133,23 +152,24 @@ class RNNBasePMISeq2Seq(nn.Module):
         # last hidden state of the encoder is used as the initial hidden state of the decoder
         # output = [seq, batch size, output_size]
         # final_state = [layers, batch size, output_size]
-        output, final_state = self.encode(src, src_len)
+        encoder_output, final_state = self.encode(src, src_len)
         
-        # pmi = [1, batch size, decoder_output_dim - encoder_output_dim]
+        # pmi = [1, batch size, pmi_hid_dim]
         pmi = self.vf_mlp(pmi).unsqueeze(0)
+        if self.decoder.num_layers > 1:
+            pmi = pmi.repeat(self.decoder.num_layers)
         if self.encoder.cell_type == 'GRU':
-            if final_state.size(0) > 1:
-                pmi = pmi.repeat(final_state.size(0))
-            # final_state = [layers, batch size, decoder_output_dim]
+            # 把encoder的最后decoder.num_layers层最后一步的隐状态作为decoder的起始状态
+            final_state = final_state[-self.decoder.num_layers:]
             final_state = torch.cat((final_state, pmi), dim=-1)
         else:
-            if final_state[0].size(0) > 1:
-                pmi = pmi.repeat(final_state[0].size(0))
             final_state = list(final_state)
+            # 把encoder的最后decoder.num_layers层最后一步的隐状态作为decoder的起始状态
+            final_state[0] = final_state[0][-self.decoder.num_layers:]
+            final_state[1] = final_state[1][-self.decoder.num_layers:]
             final_state[0] = torch.cat((final_state[0], pmi), dim=-1)
             final_state[1] = torch.cat((final_state[1], pmi), dim=-1)
             final_state = tuple(final_state)
-
 
         # first input to the decoder is the <sos> tokens
         # inputs = [1, batch size]
@@ -158,7 +178,7 @@ class RNNBasePMISeq2Seq(nn.Module):
         for t in range(1, tgt_len):
             # output: [1, batch size, dim]
             # final_state: [layers, batch size, dim]
-            output, final_state = self.decode(inputs, final_state)
+            output, final_state = self.decode(inputs, final_state, encoder_output)
             # predictions = [batch size, tgt_vocab_size]
             predictions = self.generator(output).squeeze(0)
             logits[t] = predictions
@@ -177,5 +197,6 @@ class RNNBasePMISeq2Seq(nn.Module):
     def encode(self, src, src_len):
         return self.encoder(self.src_embed(src), src_len)
 
-    def decode(self, tgt, state):
-        return self.decoder(self.tgt_embed(tgt), state)
+    def decode(self, tgt, state, encoder_output):
+        return self.decoder(self.tgt_embed(tgt), state, encoder_output)
+

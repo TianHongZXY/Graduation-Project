@@ -1,6 +1,6 @@
 from model.Encoder import RNNBaseEncoder
-from model.Decoder import RNNBaseDecoder, Generator
-from model.EncoderDecoder import RNNBaseSeq2Seq
+from model.Decoder import RNNBaseDecoder, Generator, LuongAttnRNNDecoder
+from model.EncoderDecoder import RNNBaseSeq2Seq, RNNBasePMISeq2Seq
 from model.Embedding import Embedding
 from data.dataset import seq2seq_dataset, load_iwslt
 from train import train, evaluate, inference
@@ -30,11 +30,14 @@ def main():
         description='seq2seq'
     )
 
+    parser.add_argument('--model', default='seq2seq', type=str, help='which model you are going to train, now including [seq2seq, pmi_seq2seq, attnseq2seq]')
+    parser.add_argument('--attn', default=None, type=str, help='which attention method to use, including [dot, general, concat]')
     parser.add_argument('--gpu', default=-1, type=int, help='which GPU to use, -1 means using CPU')
     parser.add_argument('--save', action="store_true", help='whether to save model or not')
     parser.add_argument('--bs', default=64, type=int, help='batch size')
     parser.add_argument('--emb_dim', default=300, type=int, help='embedding dim')
-    parser.add_argument('--hid_dim', default=300, type=int, help='hidden dim of lstm')
+    parser.add_argument('--enc_hid_dim', default=300, type=int, help='hidden dim of lstm')
+    parser.add_argument('--dec_hid_dim', default=300, type=int, help='hidden dim of lstm')
     parser.add_argument('--birnn', action='store_true', help='whether to use bidirectional rnn, default False')
     parser.add_argument('--n_layers', default=1, type=int, help='layer num of encoder and decoder')
     parser.add_argument('--dropout', default=0.5, type=float, help='dropout ratio')
@@ -65,8 +68,10 @@ def main():
     parser.add_argument('--model_path', default=None, type=str, help='restore model to continue training')
     parser.add_argument('--global_step', default=0, type=int, help='global step for continuing training')
     parser.add_argument('--inference', action='store_true', help='inference mode')
+    parser.add_argument('--seed', default=20020206, type=int, help='random seed')
 
     args, unparsed = parser.parse_known_args()
+    setup_random_seed(args.seed)
     writer = None
     if args.save:
         tz_sh = tz.gettz('Asia/Shanghai')
@@ -91,6 +96,9 @@ def main():
     elif args.tokenizer == 'bert':
         tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
         dataset = seq2seq_dataset(args, tokenizer=tokenizer.tokenize)
+    elif args.tokenizer == 'whitespace':
+        from data.dataset import whitespace_tokenize
+        dataset = seq2seq_dataset(args, tokenizer=whitespace_tokenize)
 
     #  dataset = load_iwslt(args)
 
@@ -98,7 +106,8 @@ def main():
     TGT = dataset['fields']['tgt']
 
     EMB_DIM = args.emb_dim
-    HID_DIM = args.hid_dim
+    ENC_HID_DIM = args.enc_hid_dim
+    DEC_HID_DIM = args.dec_hid_dim
     N_LAYERS = args.n_layers
     ENC_DROPOUT = args.dropout
     DEC_DROPOUT = args.dropout
@@ -118,18 +127,37 @@ def main():
         tgt_embedding.lut.weight.data.copy_(tgt_pretrained_vectors)
         print("pretrained vectors loaded successfully!")
 
-    enc = RNNBaseEncoder(args.cell_type, EMB_DIM, HID_DIM, N_LAYERS, bidirectional=args.birnn, dropout=ENC_DROPOUT)
-    dec = RNNBaseDecoder(args.cell_type, EMB_DIM, HID_DIM, N_LAYERS, dropout=DEC_DROPOUT)
-    generator = Generator(HID_DIM, len(TGT.vocab))
-    model = RNNBaseSeq2Seq(enc, dec, src_embedding, tgt_embedding, generator).to(device)
+    enc = RNNBaseEncoder(args.cell_type, EMB_DIM, ENC_HID_DIM, N_LAYERS, bidirectional=args.birnn, dropout=ENC_DROPOUT)
+    if args.attn is not None:
+        dec = LuongAttnRNNDecoder(args.cell_type, EMB_DIM, ENC_HID_DIM, DEC_HID_DIM, attn_method=args.attn, num_layers=N_LAYERS, dropout=DEC_DROPOUT)
+    else:
+        dec = RNNBaseDecoder(args.cell_type, EMB_DIM, DEC_HID_DIM, num_layers=N_LAYERS, dropout=DEC_DROPOUT)
+
+    generator = Generator(DEC_HID_DIM, len(TGT.vocab))
+
+    if args.model == 'seq2seq':
+        model = RNNBaseSeq2Seq(enc, dec, src_embedding, tgt_embedding, generator).to(device)
+        train_pmi = None
+    elif args.model == 'pmi_seq2seq':
+        # 默认pmi_hid_dim = ENC_HID_DIM, 因此dec_hid_dim必须是enc_hid_dim的两倍！
+        model = RNNBasePMISeq2Seq(ENC_HID_DIM, enc, dec, src_embedding, tgt_embedding, generator).to(device)
+        from scipy import sparse
+        train_pmi = sparse.load_npz(os.path.join(args.dataset_dir_path, "train_sparse_pmi_matrix.npz"))
+        #  valid_pmi = sparse.load_npz(os.path.join(args.dataset_dir_path, "valid_sparse_pmi_matrix.npz")) # 好像用不上valid和test pmi，不然算标签泄漏了？
+        #  test_pmi = sparse.load_npz(os.path.join(args.dataset_dir_path, "test_sparse_pmi_matrix.npz"))
+
     if args.model_path is not None:
         logger.info(f"Restore model from {args.model_path}...")
-        model.load_state_dict(torch.load(args.model_path, map_location={'cuda:0': 'cuda:' + str(args.gpu)}))
+        #  model.load_state_dict(torch.load(args.model_path, map_location={'cuda:0': 'cuda:' + str(args.gpu)}))
+        model = torch.load(args.model_path, map_location={'cuda:0': 'cuda:' + str(args.gpu)})
+        model.to(args.device)
 
+    print(model)
     weight = torch.ones(len(TGT.vocab), device=args.device)
     weight[TGT_PAD_IDX] = 0
     criterion = nn.NLLLoss(reduction='sum', ignore_index=TGT_PAD_IDX, weight=weight)
     #  criterion = LabelSmoothing(args, len(TGT.vocab), padding_idx=TGT_PAD_IDX, smoothing=args.smoothing)
+
 
     if args.inference:
         try:
@@ -137,8 +165,8 @@ def main():
         except AssertionError:
             logger.error("If you want to do inference, you must offer a trained model's path!")
         finally:
-            inference(args, model, dataset['valid_iterator'], criterion, fields=dataset['fields'], mode='valid')
-            inference(args, model, dataset['test_iterator'], criterion, fields=dataset['fields'], mode='test')
+            inference(args, model, dataset['valid_iterator'], fields=dataset['fields'], mode='valid', pmi=train_pmi)
+            inference(args, model, dataset['test_iterator'], fields=dataset['fields'], mode='test', pmi=train_pmi)
             return 0
 
     print(f'The model has {count_parameters(model):,} trainable parameters')
@@ -156,14 +184,15 @@ def main():
     best_test_loss = float('inf')
     global_step = optimizer._step
 
+
     for epoch in range(N_EPOCHS):
         start_time = time.time()
 
-        train_metrics = train(args, model, dataset['train_iterator'], optimizer, criterion, fields=dataset['fields'], writer=writer)
+        train_metrics = train(args, model, dataset['train_iterator'], optimizer, criterion, fields=dataset['fields'], writer=writer, pmi=train_pmi)
         global_step += len(dataset['train_iterator'])
         args.global_step = global_step
-        valid_metrics = evaluate(args, model, dataset['valid_iterator'], criterion, fields=dataset['fields'])
-        test_metrics = evaluate(args, model, dataset['test_iterator'], criterion, fields=dataset['fields'])
+        valid_metrics = evaluate(args, model, dataset['valid_iterator'], criterion, fields=dataset['fields'], pmi=train_pmi)
+        test_metrics = evaluate(args, model, dataset['test_iterator'], criterion, fields=dataset['fields'], pmi=train_pmi)
         end_time = time.time()
         epoch_mins, epoch_secs = epoch_time(start_time, end_time)
         print(f'Epoch: {epoch + 1:02} | Global step: {global_step} | Time: {epoch_mins}m {epoch_secs}s')
@@ -178,7 +207,8 @@ def main():
             best_test_loss = test_metrics['epoch_loss'] if test_metrics['epoch_loss'] < best_test_loss else best_test_loss
             best_global_step = global_step if valid_metrics['epoch_loss'] == best_valid_loss else best_global_step
 
-            torch.save(model.state_dict(), os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
+            torch.save(model, os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
+            #  torch.save(model.state_dict(), os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
             with open(os.path.join(save_dir, f'log_global_step-{global_step}.txt'), 'w') as log_file:
                 valid_metrics['Best Global Step'] = best_global_step
                 valid_metrics['Best Loss'] = best_valid_loss
@@ -186,8 +216,8 @@ def main():
                 test_metrics['Best Loss'] = best_test_loss
                 test_metrics['Best PPL'] = math.exp(best_test_loss)
 
-                inference(args, model, dataset['valid_iterator'], criterion, fields=dataset['fields'], mode='valid')
-                inference(args, model, dataset['test_iterator'], criterion, fields=dataset['fields'], mode='test')
+                inference(args, model, dataset['valid_iterator'], fields=dataset['fields'], mode='valid', pmi=train_pmi)
+                inference(args, model, dataset['test_iterator'], fields=dataset['fields'], mode='test', pmi=train_pmi)
 
                 valid_path_hyp = os.path.join(args.save_dir, 'responses-valid.txt')
                 test_path_hyp = os.path.join(args.save_dir, 'responses-test.txt')

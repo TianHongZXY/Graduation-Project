@@ -34,8 +34,12 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None, pmi=
         total_tokens += ntokens
         optimizer.zero_grad()
 
-        # output = [tgt len, batch size, vocab_size]
-        output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=args.teaching_rate)
+        if args.model == 'pmi_seq2seq':
+            # output = [tgt len, batch size, vocab_size]
+            output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=args.teaching_rate)
+        elif args.model == 'seq2seq':
+            output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=args.teaching_rate)
+
         # 用于求KL-DIV Loss或NLL Loss需要先求log softmax
         output = F.log_softmax(output, dim=-1)
 
@@ -100,8 +104,12 @@ def evaluate(args, model, iterator, criterion, fields, pmi=None):
             tgt, tgt_len = batch.tgt
             ntokens = (tgt[1:] != tgt_padding_idx).data.sum()
             total_tokens += ntokens
-            # output = [tgt len, batch size, vocab_size]
-            output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)  # turn off teacher forcing
+
+            if args.model == 'pmi_seq2seq':
+                # output = [tgt len, batch size, vocab_size]
+                output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)  # turn off teacher forcing
+            elif args.model == 'seq2seq':
+                output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=1)
 
             # pred = [batch size, tgt len - 1]
             #  pred = output[1:].argmax(-1).T
@@ -151,7 +159,11 @@ def inference(args, model, iterator, fields, mode, pmi=None):
             # tgt = [tgt len, batch size]
             tgt, tgt_len = batch.tgt
             # output = [tgt len, batch size, vocab_size]
-            output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)  # turn off teacher forcing
+            if args.model == 'pmi_seq2seq':
+                output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)  # turn off teacher forcing
+            elif args.model == 'seq2seq':
+                output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=1)
+
 
             # pred = [batch size, tgt len - 1]
             pred = output[1:].argmax(-1).T

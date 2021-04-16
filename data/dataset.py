@@ -197,8 +197,6 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
                 dill.dump(SRC.vocab, f)
             with open(os.path.join(args.dataset_dir_path, 'tgt_vocab'), 'wb') as f:
                 dill.dump(TGT.vocab, f)
-        logger.info(f"SRC has {len(SRC.vocab.itos)} words.")
-        logger.info(f"TGT has {len(TGT.vocab.itos)} words.")
 
     else:
         #  优先使用给定的vocab file
@@ -208,6 +206,8 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
         with open(os.path.join(args.dataset_dir_path, 'tgt_vocab'), 'rb') as f:
             TGT.vocab = dill.load(f)
 
+    logger.info(f"SRC has {len(SRC.vocab.itos)} words.")
+    logger.info(f"TGT has {len(TGT.vocab.itos)} words.")
     train_iterator, valid_iterator, test_iterator = BucketIterator.splits(
         (train, valid, test),
         batch_size=BATCH_SIZE,
