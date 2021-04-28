@@ -174,6 +174,9 @@ def seq2seq_dataset(args, is_train=True, tokenizer=None):
         train, valid, test = dataset
         if args.serialize:
             dump_examples(args, train, valid, test)
+    logger.info(f"Total {len(train)} pairs in train data")
+    logger.info(f"Total {len(valid)} pairs in valid data")
+    logger.info(f"Total {len(test)} pairs in test data")
     vectors = None
     if args.pretrained_embed_file is not None:
         logger.info(f"Using pretrained vectors {args.pretrained_embed_file}")

@@ -1,7 +1,8 @@
 from model.Encoder import RNNBaseEncoder
 from model.Decoder import RNNBaseDecoder, Generator, LuongAttnRNNDecoder
-from model.EncoderDecoder import RNNBaseSeq2Seq, RNNBasePMISeq2Seq
+from model.EncoderDecoder import RNNBaseSeq2Seq, RNNBasePMISeq2Seq_v4 as RNNBasePMISeq2Seq
 from model.Embedding import Embedding
+from model.modules import LayerNorm
 from data.dataset import seq2seq_dataset, load_iwslt
 from train import train, evaluate, inference
 import torch.optim as optim
@@ -30,7 +31,7 @@ def main():
         description='seq2seq'
     )
 
-    parser.add_argument('--model', default='seq2seq', type=str, help='which model you are going to train, now including [seq2seq, pmi_seq2seq, attnseq2seq]')
+    parser.add_argument('--model', default='seq2seq', type=str, help='which model you are going to train, now including [seq2seq, pmi_seq2seq]')
     parser.add_argument('--attn', default=None, type=str, help='which attention method to use, including [dot, general, concat]')
     parser.add_argument('--gpu', default=-1, type=int, help='which GPU to use, -1 means using CPU')
     parser.add_argument('--save', action="store_true", help='whether to save model or not')
@@ -56,7 +57,7 @@ def main():
                         help='how many subprocesses to use for data loading. 0 means that the data will be loaded in the main process.')
     parser.add_argument('--l2', default=0, type=float, help='l2 regularization')
     parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
-    parser.add_argument('--teaching_rate', default=0.5, type=float, help='teaching_rate is probability to use teacher forcing')
+    parser.add_argument('--teaching_rate', default=1, type=float, help='teaching_rate is probability to use teacher forcing')
     parser.add_argument('--pretrained_embed_file', default=None, type=str, help='torchtext vector name')
     parser.add_argument('--warmup', default=0, type=int, help='warmup steps, 0 means not using NoamOpt')
     parser.add_argument('--cell_type', default='LSTM', type=str, help='cell type of encoder/decoder, LSTM or GRU')
@@ -69,6 +70,8 @@ def main():
     parser.add_argument('--global_step', default=0, type=int, help='global step for continuing training')
     parser.add_argument('--inference', action='store_true', help='inference mode')
     parser.add_argument('--seed', default=20020206, type=int, help='random seed')
+    parser.add_argument('--ln', action='store_true', help='whether to use layernorm, if model is pmi_seq2seq, use conditional layernorm as default')
+    parser.add_argument('--patience', default=None, type=int, help="stop when {patience} continued epochs giving  no improved performance")
 
     args, unparsed = parser.parse_known_args()
     setup_random_seed(args.seed)
@@ -127,20 +130,30 @@ def main():
         tgt_embedding.lut.weight.data.copy_(tgt_pretrained_vectors)
         print("pretrained vectors loaded successfully!")
 
-    enc = RNNBaseEncoder(args.cell_type, EMB_DIM, ENC_HID_DIM, N_LAYERS, bidirectional=args.birnn, dropout=ENC_DROPOUT)
+    enc = RNNBaseEncoder(args.cell_type, EMB_DIM, ENC_HID_DIM, N_LAYERS, bidirectional=args.birnn, dropout=ENC_DROPOUT, layernorm=args.ln)
     if args.attn is not None:
         dec = LuongAttnRNNDecoder(args.cell_type, EMB_DIM, ENC_HID_DIM, DEC_HID_DIM, attn_method=args.attn, num_layers=N_LAYERS, dropout=DEC_DROPOUT)
     else:
         dec = RNNBaseDecoder(args.cell_type, EMB_DIM, DEC_HID_DIM, num_layers=N_LAYERS, dropout=DEC_DROPOUT)
 
     generator = Generator(DEC_HID_DIM, len(TGT.vocab))
+    if args.ln:
+        if args.model == 'seq2seq':
+            layernorm = LayerNorm(feature=ENC_HID_DIM)
+        elif args.model == 'pmi_seq2seq':
+            layernorm = LayerNorm(feature=DEC_HID_DIM, conditional=True, condition_size=len(TGT.vocab),
+                                condition_hidden_size=DEC_HID_DIM, condition_activation="ReLU")
+        else:
+            raise ValueError(args.model, "is not a legal model name!")
+    else:
+        layernorm = None
 
     if args.model == 'seq2seq':
         model = RNNBaseSeq2Seq(enc, dec, src_embedding, tgt_embedding, generator).to(device)
         train_pmi = None
     elif args.model == 'pmi_seq2seq':
         # 默认pmi_hid_dim = ENC_HID_DIM, 因此dec_hid_dim必须是enc_hid_dim的两倍！
-        model = RNNBasePMISeq2Seq(ENC_HID_DIM, enc, dec, src_embedding, tgt_embedding, generator).to(device)
+        model = RNNBasePMISeq2Seq(ENC_HID_DIM, enc, dec, src_embedding, tgt_embedding, generator, layernorm).to(device)
         from scipy import sparse
         train_pmi = sparse.load_npz(os.path.join(args.dataset_dir_path, "train_sparse_pmi_matrix.npz"))
         #  valid_pmi = sparse.load_npz(os.path.join(args.dataset_dir_path, "valid_sparse_pmi_matrix.npz")) # 好像用不上valid和test pmi，不然算标签泄漏了？
@@ -183,7 +196,8 @@ def main():
     best_valid_loss = float('inf')
     best_test_loss = float('inf')
     global_step = optimizer._step
-
+    patience = args.patience if args.patience else float('inf')
+    no_improve = 0
 
     for epoch in range(N_EPOCHS):
         start_time = time.time()
@@ -207,8 +221,12 @@ def main():
             best_test_loss = test_metrics['epoch_loss'] if test_metrics['epoch_loss'] < best_test_loss else best_test_loss
             best_global_step = global_step if valid_metrics['epoch_loss'] == best_valid_loss else best_global_step
 
-            torch.save(model, os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
-            #  torch.save(model.state_dict(), os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
+            if best_global_step == global_step:
+                torch.save(model, os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
+                #  torch.save(model.state_dict(), os.path.join(save_dir, f'model_global_step-{global_step}.pt'))
+                no_improve = 0
+            else:
+                no_improve += 1
             with open(os.path.join(save_dir, f'log_global_step-{global_step}.txt'), 'w') as log_file:
                 valid_metrics['Best Global Step'] = best_global_step
                 valid_metrics['Best Loss'] = best_valid_loss
@@ -240,6 +258,8 @@ def main():
                     log_file.write(f'Valid {metric}: {performance}\n')
                 for metric, performance in test_metrics.items():
                     log_file.write(f'Test {metric}: {performance}\n')
+            if no_improve >= patience:
+                break
 
 
 if __name__ == '__main__':
