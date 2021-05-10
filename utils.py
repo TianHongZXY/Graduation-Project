@@ -284,3 +284,34 @@ def setup_random_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
 
+
+def sample_gumbel(shape, eps=1e-20):
+    U = torch.rand(shape)
+    return -torch.log(-torch.log(U + eps) + eps)
+
+
+def gumbel_softmax_sample(logits, temperature=1):
+    assert temperature > 0
+    y = logits + sample_gumbel(logits.size()).type_as(logits)
+    return F.softmax(y / temperature, dim=-1)
+
+
+def gumbel_softmax(logits, temperature=1, hard=False):
+    """
+    ST-gumple-softmax
+    input: [*, n_class]
+    return: [*, n_class] , one-hot if hard is True
+    """
+    y = gumbel_softmax_sample(logits, temperature)
+
+    if not hard:
+        return y
+
+    shape = y.size()
+    ind = y.max(dim=-1, keepdim=True)[1]
+    y_hard = torch.zeros_like(logits)
+    y_hard.scatter_(-1, ind, 1.0)
+    # Set gradients w.r.t. y_hard gradients w.r.t. y
+    y_hard = y_hard - y.detach() + y
+    return y_hard
+
