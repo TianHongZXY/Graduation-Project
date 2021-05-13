@@ -155,23 +155,27 @@ def calc_rouge(hyp, ref):
 def calc_metrics(path_refs, path_hyp):
     #  nist, sbleu, bleu, meteor, entropy, diversity, avg_len = nlp_metrics(
     #        path_refs=["answers-" + mode + ".txt"], path_hyp="responses-" + mode + ".txt")
-    bleu, entropy, diversity, avg_len = calc_nlp_metrics(
+    bleu, entropy, diversity, avg_len, sbleu = calc_nlp_metrics(
           path_refs=[path_refs], path_hyp=path_hyp)
     #  print(f'nist: {nist}')
     print(f'bleu: {bleu}')
-    #  print(f'smoothed_bleu: {sbleu}')
+    print(f'smoothed_bleu: {sbleu}')
     #  print(f'meteor: {meteor}')
     print(f'entropy: {entropy}')
     print(f'diversity: {diversity}')
     print(f'avg_len: {avg_len}')
     
     metrics = {'bleu': bleu, 
+            'sbleu': sbleu,
             'diversity': diversity, 
             'entropy': entropy, 
             'avg_len': avg_len
             }
     return metrics
 
+if __name__ == '__main__':
+    calc_metrics("models/answers-valid.txt", "models/responses-valid.txt")
+    calc_metrics("models/answers-test.txt", "models/responses-test.txt")
     #  write_nist_file(['answers.txt'], 'responses.txt', ['posts.txt'])
     #  get nist score and bleu score
     #  perl mteval-v14c-20190801/mteval-v14c.pl -s nist/src.xml -t nist/hyp.xml -r nist/ref.xml
