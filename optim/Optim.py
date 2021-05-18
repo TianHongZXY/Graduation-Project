@@ -28,8 +28,8 @@ class Optimizer(object):
         self.optimizer.step()
         self._step += 1
 
-    def zero_grad(self):
-        self.optimizer.zero_grad()
+    def zero_grad(self, set_to_none=False):
+        self.optimizer.zero_grad(set_to_none=set_to_none)
 
     def rate(self):
         return self.lr
@@ -107,8 +107,8 @@ class NoamOptimWrapper:
         return self.factor * (self.model_size ** (-0.5) *
                 min(step ** (-0.5), step * self.warmup ** (-1.5)))
 
-    def zero_grad(self):
-        self.optimizer.zero_grad()
+    def zero_grad(self, set_to_none=False):
+        self.optimizer.zero_grad(set_to_none=set_to_none)
 
     def get_global_step(self):
         return self._step

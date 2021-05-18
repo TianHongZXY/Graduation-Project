@@ -132,6 +132,8 @@ class LuongAttnRNNDecoder(nn.Module):
         concat_input = torch.cat((output, context), 1)
         # concat_output shape = [1, batch_size, dec_hidden_size]
         concat_output = torch.tanh(self.concat(concat_input)).unsqueeze(0)
+        #  有时不用tanh激活函数效果更好
+        #  concat_output = (self.concat(concat_input)).unsqueeze(0)
         # Return output and final state
         return concat_output, final_state
 
@@ -140,7 +142,7 @@ class LuongAttnRNNDecoder(nn.Module):
 
 
 class Generator(nn.Module):
-    """Define standard linear + softmax generation step."""
+    """Define standard linear generation step."""
     def __init__(self, d_model, vocab):
         super(Generator, self).__init__()
         self.proj = nn.Linear(d_model, vocab, bias=False)

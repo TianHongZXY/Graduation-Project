@@ -2,9 +2,12 @@ from tqdm import tqdm
 import torch
 import math
 import time
+import torch.nn as nn
 import torch.nn.functional as F
 from utils import write_src_tgt_to_file, write_pred_to_file
 import numpy as np
+import torch.autograd as autograd
+
 
 def train(args, model, iterator, optimizer, criterion, fields, writer=None, pmi=None):
     model.train()
@@ -14,6 +17,8 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None, pmi=
     total_tokens = 0
     tgt_padding_idx = fields['tgt'].vocab.stoi[fields['tgt'].pad_token]
     vocab_size = len(fields['tgt'].vocab)
+    # TODO 为v5暂时修改
+    #  kl_criterion = nn.KLDivLoss()
 
     for i, batch in enumerate(iterator):
         src, src_len = batch.src
@@ -30,6 +35,7 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None, pmi=
             src_pmi = torch.sum(src_pmi, dim=1)
         # tgt = [tgt len, batch size]
         tgt, tgt_len = batch.tgt
+        tgt_clone = tgt.clone()
         ntokens = (tgt[1:] != tgt_padding_idx).data.sum()
         total_tokens += ntokens
         optimizer.zero_grad()
@@ -41,7 +47,13 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None, pmi=
             output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=args.teaching_rate)
 
         # 用于求KL-DIV Loss或NLL Loss需要先求log softmax
-        output = F.log_softmax(output, dim=-1)
+        # TODO 为v5临时修改
+        logits = output
+        #  logits, kl_logits = output
+        #  entropy = - F.softmax(logits[1:], dim=-1) * F.log_softmax(logits[1:], dim=-1)
+        #  entropy = 0.0001 * torch.sum(entropy)
+        #  kl_loss = 100 * kl_criterion(F.log_softmax(kl_logits, dim=-1), F.softmax(src_pmi, dim=-1))
+        output = F.log_softmax(logits, dim=-1)
 
         #  output = model.forward_parallel(src, src_len.cpu().long(), tgt)
         # output = [(tgt len - 1) * batch size, vocab_size]
@@ -57,14 +69,52 @@ def train(args, model, iterator, optimizer, criterion, fields, writer=None, pmi=
             loss = criterion(output, tgt)
             loss /= ntokens
             ce_loss = loss
+        # TODO 为v5临时修改
+        #  loss = loss + kl_loss - entropy
+        # TODO 为梯度惩罚临时修改
+        #  autograd.backward(loss, create_graph=True)
+        #############grad penalty################
+        x_grad = autograd.grad(loss, model.src_embed.lut.weight, create_graph=True)[0]
+        gp = torch.pow(torch.norm(x_grad), 2)
+        loss += gp
         loss.backward()
-
+        #  update1 = model.src_embed.lut.weight.grad.data.clone()
+        #  gp.backward()
+        #  update2 = model.src_embed.lut.weight.grad.data.clone()
+        #  print('update1: ', update1)
+        #  print('update2: ', update2)
+        #  diff_norm = (update1-update2).norm().item()
+        #  print(diff_norm)
+        #########################################
+        
+        ##############grad attack################
+        #  grad_attack = model.src_embed.lut.weight.grad
+        #  model.src_embed.lut.weight.data.add_(grad_attack)
+        #  if args.model == 'pmi_seq2seq':
+        #      output = model(src, src_len.cpu().long(), tgt_clone, pmi=src_pmi, teacher_forcing_ratio=args.teaching_rate)
+        #  elif args.model == 'seq2seq':
+        #      output = model(src, src_len.cpu().long(), tgt_clone, teacher_forcing_ratio=args.teaching_rate)
+        #
+        #  logits = output
+        #  output = F.log_softmax(logits, dim=-1)
+        #  output = output[1:].reshape(-1, vocab_size)
+        #  if args.smoothing > 0:
+        #      loss_adv, _ = criterion(output, tgt)
+        #      loss_adv /= ntokens
+        #  else:
+        #      loss_adv = criterion(output, tgt)
+        #      loss_adv /= ntokens
+        #  loss_adv.backward()
+        ########################################
         optimizer.step()
         i += 1
         if i % 50 == 0:
             elapsed = time.time() - start
-            print("Global Step: %d\tEpoch Step: %d\tLoss: %f\tTokens per Sec: %f\tlr: %f" %
-                        (optimizer.get_global_step(), i, ce_loss.item(), total_tokens / elapsed, optimizer.rate()))
+            # TODO 为v5临时修改
+            #  print("Global Step: %d\tEpoch Step: %d\tLoss: %f\tTokens per Sec: %f\tlr: %f\tkl_loss: %f\tentropy: %f" %
+            #              (optimizer.get_global_step(), i, ce_loss.item(), total_tokens / elapsed, optimizer.rate(), kl_loss, entropy))
+            print("Global Step: %d\tEpoch Step: %d\tLoss: %f\tTokens per Sec: %f\tlr: %f\tgp %f" %
+                        (optimizer.get_global_step(), i, ce_loss.item(), total_tokens / elapsed, optimizer.rate(), gp.item()))
         if writer:
             writer.add_scalar('Train_Loss', ce_loss.item(), optimizer.get_global_step())
             writer.add_scalar('Train_PPL', math.exp(ce_loss.item()), optimizer.get_global_step())
@@ -107,7 +157,7 @@ def evaluate(args, model, iterator, criterion, fields, pmi=None):
 
             if args.model == 'pmi_seq2seq':
                 # output = [tgt len, batch size, vocab_size]
-                output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)  # turn off teacher forcing
+                output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)
             elif args.model == 'seq2seq':
                 output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=1)
 
@@ -116,6 +166,8 @@ def evaluate(args, model, iterator, criterion, fields, pmi=None):
 
             # output = [(tgt len - 1) * batch size, vocab_size]
             # tgt = [(tgt len - 1) * batch size]
+            # TODO 为v5临时修改
+            #  output, _ = output
             output = output[1:].reshape(-1, vocab_size)
             tgt = tgt[1:].reshape(-1)
 
@@ -160,10 +212,12 @@ def inference(args, model, iterator, fields, mode, pmi=None):
             tgt, tgt_len = batch.tgt
             # output = [tgt len, batch size, vocab_size]
             if args.model == 'pmi_seq2seq':
-                output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=1)  # turn off teacher forcing
+                output = model(src, src_len.cpu().long(), tgt, pmi=src_pmi, teacher_forcing_ratio=0)
             elif args.model == 'seq2seq':
-                output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=1)
+                output = model(src, src_len.cpu().long(), tgt, teacher_forcing_ratio=0)
 
+            # TODO 为v5临时修改
+            #  output, _ = output
 
             # pred = [batch size, tgt len - 1]
             pred = output[1:].argmax(-1).T
